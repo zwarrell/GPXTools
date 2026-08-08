@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>GPX Compare & Merge</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="sidebar">
+    <h1>GPX Compare & Merge</h1>
+
+    <section>
+        <h2>1. Base map files</h2>
+        <p class="hint">Drop GPX files here or click to browse. Radio picks the active one.</p>
+        <label class="dropzone" id="baseDropzone">
+            <input type="file" id="baseFiles" accept=".gpx" multiple>
+            <span class="dropzone-label">Drop base GPX files or click to browse</span>
+        </label>
+        <div class="file-list" id="baseList"></div>
+        <div id="baseInfo" class="info"></div>
+        <div class="list-actions">
+            <button id="mergeTracksMode" class="mini">Merge tracks: off</button>
+        </div>
+        <div id="mergeTracksHint" class="info"></div>
+    </section>
+
+    <section>
+        <h2>2. New ride files</h2>
+        <p class="hint">Drop GPX files here or click to browse. Checkboxes pick which to include.</p>
+        <label class="dropzone" id="rideDropzone">
+            <input type="file" id="rideFiles" accept=".gpx" multiple>
+            <span class="dropzone-label">Drop ride GPX files or click to browse</span>
+        </label>
+        <div class="list-actions">
+            <button id="rideCheckRelevant" class="mini">Check relevant</button>
+            <button id="rideCheckAll" class="mini">Check all</button>
+            <button id="rideCheckNone" class="mini">Check none</button>
+        </div>
+        <div class="file-list" id="rideList"></div>
+        <div id="rideInfo" class="info"></div>
+    </section>
+
+    <section>
+        <h2>3. Duplicate detection</h2>
+        <label>
+            Units:
+            <label class="unit-opt"><input type="radio" name="units" value="imperial"> Imperial</label>
+            <label class="unit-opt"><input type="radio" name="units" value="metric"> Metric</label>
+        </label>
+        <label>
+            Threshold:
+            <input type="number" id="threshold" value="15" min="1" step="1">
+            <span id="thresholdUnit">m</span>
+        </label>
+        <label>
+            Min novel segment length:
+            <input type="number" id="minLen" value="30" min="0" step="10">
+            <span id="minLenUnit">m</span>
+        </label>
+        <button id="recompute">Recompute</button>
+    </section>
+
+    <section>
+        <h2>4. New segments</h2>
+        <div class="segment-actions">
+            <button id="selectAll">Include all</button>
+            <button id="deselectAll">Exclude all</button>
+            <button id="splitMode" class="mini">Split mode: off</button>
+        </div>
+        <div id="segList"></div>
+    </section>
+
+    <section>
+        <h2>5. Merge</h2>
+        <div id="stats" class="info"></div>
+        <button id="download" disabled>Download merged GPX</button>
+        <div id="mergeStatus" class="info"></div>
+    </section>
+
+    <section>
+        <h2>6. Merged history</h2>
+        <p class="hint">Ride files consumed by past merges — safe to delete from disk.</p>
+        <div id="mergedHistory"></div>
+        <button id="clearMergedHistory" class="mini">Clear history</button>
+    </section>
+
+    <div id="legend">
+        <div><span class="sw sw-base"></span>Base track</div>
+        <div><span class="sw sw-dup"></span>Ride — duplicate</div>
+        <div><span class="sw sw-novel-on"></span>New — included</div>
+        <div><span class="sw sw-novel-off"></span>New — excluded</div>
+    </div>
+</div>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
