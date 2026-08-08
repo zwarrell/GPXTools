@@ -2,16 +2,41 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GPX Compare & Merge (simple)</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body class="simple-mode">
+<button id="mobileMenuToggle" title="Menu">☰</button>
+<div id="mobileBackdrop"></div>
+
+<div id="settingsModal" hidden>
+    <div class="modal-backdrop"></div>
+    <div class="modal-box" role="dialog" aria-labelledby="settingsModalTitleSimple">
+        <div class="modal-header">
+            <h2 id="settingsModalTitleSimple">Settings</h2>
+            <button class="modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="setting-row">
+                <label class="setting-label">Units</label>
+                <div class="setting-value">
+                    <label class="unit-opt"><input type="radio" name="units" value="imperial"> Imperial</label>
+                    <label class="unit-opt"><input type="radio" name="units" value="metric"> Metric</label>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div id="sidebar">
     <h1>GPX Compare & Merge</h1>
     <p class="hint" style="margin-top:-8px;">
         Simple mode. The <a href="index.html">full version</a> has the tools panel and base-contents browser.
     </p>
+
+    <button id="settingsToggle" class="header-btn" title="Settings" style="position:absolute;top:10px;right:10px;">⚙</button>
 
     <section>
         <h2>1. Base map files</h2>
@@ -44,11 +69,6 @@
 
         <section>
             <h2>3. Duplicate detection</h2>
-            <label>
-                Units:
-                <label class="unit-opt"><input type="radio" name="units" value="imperial"> Imperial</label>
-                <label class="unit-opt"><input type="radio" name="units" value="metric"> Metric</label>
-            </label>
             <label>
                 Threshold:
                 <input type="number" id="threshold" value="15" min="1" step="1">
@@ -103,6 +123,13 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/esri-leaflet@3.0.14/dist/esri-leaflet.js"></script>
-<script src="app.js"></script>
+<script src="js/config.js"></script>
+<script src="js/state.js"></script>
+<script src="js/gpx.js"></script>
+<script src="js/spatial.js"></script>
+<script src="js/render.js"></script>
+<script src="js/compare.js"></script>
+<script src="js/tools.js"></script>
+<script src="js/ui.js"></script>
 </body>
 </html>

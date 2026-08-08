@@ -1,0 +1,678 @@
+// ---------- tools.js ----------
+// Map tools (split/merge/extend/draw/waypoint), the undo stack, and the shared
+// refreshBaseAfterEdit pipeline. Also owns the merge queue, base-track split,
+// blank-GPX bootstrap, and the map-level click/mousemove handlers that drive
+// the active tool.
+
+function joinEndFor(trkEl, latlng) {
+    const pts = collectAllTrkpts(trkEl);
+    if (!pts.length) return null;
+    const first = pts[0];
+    const last = pts[pts.length - 1];
+    const dStart = haversineMeters(
+        latlng.lat, latlng.lng,
+        parseFloat(first.getAttribute('lat')), parseFloat(first.getAttribute('lon')));
+    const dEnd = haversineMeters(
+        latlng.lat, latlng.lng,
+        parseFloat(last.getAttribute('lat')), parseFloat(last.getAttribute('lon')));
+    return dStart < dEnd ? 'start' : 'end';
+}
+
+function setMergeTracksMode(on) {
+    setActiveTool(on ? 'merge' : null);
+}
+
+function handleMergeTrackClick(line) {
+    if (isSelectedForMerge('baseTrack', line._trkEl)) return; // already queued
+    state.mergeSelection.push({
+        kind: 'baseTrack',
+        ref: line._trkEl,
+        name: line._trkName,
+    });
+    renderMergeQueue();
+    drawBase();
+    drawRide();
+}
+
+function handleMergeSegClick(seg) {
+    if (!seg.novel) return;
+    if (isSelectedForMerge('rideSeg', seg.id)) return;
+    state.mergeSelection.push({
+        kind: 'rideSeg',
+        ref: seg.id,
+        name: seg.name || defaultSegmentName(seg, 1),
+    });
+    renderMergeQueue();
+    drawBase();
+    drawRide();
+}
+
+function removeFromMergeQueue(index) {
+    state.mergeSelection.splice(index, 1);
+    renderMergeQueue();
+    drawBase();
+    drawRide();
+}
+
+function renderMergeQueue() {
+    const el = document.getElementById('mergeTracksHint');
+    if (!state.mergeMode) { el.innerHTML = ''; return; }
+    if (!state.mergeSelection.length) {
+        el.innerHTML = '<div class="hint">Click tracks or new segments in the order you want them joined.</div>';
+        return;
+    }
+    const items = state.mergeSelection.map((s, i) => {
+        const kindTag = s.kind === 'baseTrack' ? 'base' : 'new';
+        return `<li><span class="merge-item-num">${i + 1}.</span>
+                    <span class="merge-item-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+                    <span class="merge-item-kind">(${kindTag})</span>
+                    <button class="mini" data-remove="${i}" title="Remove">×</button></li>`;
+    }).join('');
+    el.innerHTML =
+        `<div><b>Merge queue (${state.mergeSelection.length}):</b></div>` +
+        `<ol class="merge-queue">${items}</ol>` +
+        `<button id="mergeFinish" ${state.mergeSelection.length < 2 ? 'disabled' : ''}>Finish & name</button> ` +
+        `<button id="mergeCancel" class="mini">Cancel</button>`;
+    el.querySelectorAll('[data-remove]').forEach(btn =>
+        btn.addEventListener('click', () => removeFromMergeQueue(+btn.dataset.remove)));
+    const finish = document.getElementById('mergeFinish');
+    if (finish) finish.addEventListener('click', finishMergeQueue);
+    const cancel = document.getElementById('mergeCancel');
+    if (cancel) cancel.addEventListener('click', () => setMergeTracksMode(false));
+}
+
+function finishMergeQueue() {
+    if (state.mergeSelection.length < 2) return;
+    const suggested = state.mergeSelection[0].name;
+    const newName = prompt(
+        `Name for merged track (${state.mergeSelection.length} pieces):`,
+        suggested);
+    if (!newName || !newName.trim()) return;
+    performMultiMerge(state.mergeSelection.slice(), newName.trim());
+    setMergeTracksMode(false);
+}
+
+// Turn each selection into its underlying trkpt XML elements.
+// Ride-segment points come straight from the ride's cached raw <trkpt> nodes.
+function pointsForSelection(s) {
+    if (s.kind === 'baseTrack') {
+        return collectAllTrkpts(s.ref);
+    }
+    const seg = state.segments.find(sg => sg.id === s.ref);
+    if (!seg) return [];
+    const ridePoints = state.rideCache.get(seg.rideName)?.points;
+    if (!ridePoints) return [];
+    return seg.indices.map(i => ridePoints[i].raw).filter(Boolean);
+}
+
+// Attach an incoming track to an existing track WITHOUT trimming the existing
+// one. Finds which of existing's two endpoints is closer to any point on
+// incoming, then attaches incoming there — keeping the portion of incoming
+// that extends away from existing. This preserves the first track's endpoints
+// so the user's "primary" line isn't mutated by the merge.
+function attachTrack(existing, incoming) {
+    if (!existing.length) return incoming.slice();
+    if (!incoming.length) return existing.slice();
+    const startLL = ptLatLng(existing[0]);
+    const endLL   = ptLatLng(existing[existing.length - 1]);
+    let iEndJ = 0, iEndDist = Infinity;
+    let iStartJ = 0, iStartDist = Infinity;
+    for (let j = 0; j < incoming.length; j++) {
+        const p = ptLatLng(incoming[j]);
+        const de = haversineMeters(endLL.lat,   endLL.lon,   p.lat, p.lon);
+        const ds = haversineMeters(startLL.lat, startLL.lon, p.lat, p.lon);
+        if (de < iEndDist)   { iEndDist   = de; iEndJ   = j; }
+        if (ds < iStartDist) { iStartDist = ds; iStartJ = j; }
+    }
+    const attachAtEnd = iEndDist <= iStartDist;
+    const attachIdx   = attachAtEnd ? iEndJ : iStartJ;
+    // Keep the longer of incoming's two halves split by the attach point.
+    // If the longer half is on the "before" side, reverse it so attachIdx
+    // ends up as its first point.
+    const before = incoming.slice(0, attachIdx + 1);
+    const after  = incoming.slice(attachIdx);
+    const incomingKept = after.length >= before.length ? after : before.slice().reverse();
+    // Concat with existing intact. Drop the join copy only if it's within a
+    // meter of existing's endpoint (same physical spot).
+    const [joinLat, joinLon] = [
+        parseFloat(incomingKept[0].getAttribute('lat')),
+        parseFloat(incomingKept[0].getAttribute('lon')),
+    ];
+    const anchorLL = attachAtEnd ? endLL : startLL;
+    const overlap = haversineMeters(anchorLL.lat, anchorLL.lon, joinLat, joinLon) < 1;
+    const tail = overlap ? incomingKept.slice(1) : incomingKept;
+    if (attachAtEnd) return existing.concat(tail);
+    return tail.slice().reverse().concat(existing);
+}
+
+// Chain merge: keep the first selected track fully intact, then extend it
+// with each subsequent track via attachTrack.
+function chainClosestMerge(arrays) {
+    if (!arrays.length) return [];
+    let result = arrays[0].slice();
+    for (let i = 1; i < arrays.length; i++) {
+        result = attachTrack(result, arrays[i]);
+    }
+    return result;
+}
+
+function performMultiMerge(selections, newName) {
+    const doc = state.baseXmlDoc;
+    const arrays = selections.map(pointsForSelection).filter(a => a.length > 0);
+    if (arrays.length < 2) { alert('Not enough valid tracks to merge.'); return; }
+    pushHistory();
+    const merged = chainClosestMerge(arrays);
+
+    const trk = doc.createElementNS(GPX_NS, 'trk');
+    const nameEl = doc.createElementNS(GPX_NS, 'name');
+    nameEl.textContent = newName;
+    trk.appendChild(nameEl);
+    const trkseg = doc.createElementNS(GPX_NS, 'trkseg');
+    for (const pt of merged) trkseg.appendChild(pt.cloneNode(true));
+    trk.appendChild(trkseg);
+
+    // Insert new trk where the first base track was (or at the end of gpx root).
+    const firstBase = selections.find(s => s.kind === 'baseTrack');
+    if (firstBase && firstBase.ref.parentNode) {
+        firstBase.ref.parentNode.insertBefore(trk, firstBase.ref);
+    } else {
+        doc.getElementsByTagName('gpx')[0].appendChild(trk);
+    }
+
+    // Remove any selected base tracks (they've been absorbed).
+    for (const s of selections) {
+        if (s.kind === 'baseTrack' && s.ref.parentNode) {
+            s.ref.parentNode.removeChild(s.ref);
+        }
+    }
+
+    const pieces = selections.map(s => `"${s.name}"`).join(' + ');
+    refreshBaseAfterEdit(`Merged ${pieces} into "${newName}".`);
+}
+
+// Find the smallest N such that "{base} (part N)" is not already the name of
+// an existing base track. Base tracks named exactly {base} count as N=1.
+function nextPartNumber(base) {
+    if (!state.baseXmlDoc) return 1;
+    const trks = [...state.baseXmlDoc.getElementsByTagName('trk')];
+    const escapedBase = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`^${escapedBase}\\s*\\(part (\\d+)\\)\\s*$`);
+    let max = 0;
+    let sawBareBase = false;
+    for (const trk of trks) {
+        const name = directChildText(trk, 'name');
+        const m = name.match(re);
+        if (m) { const n = parseInt(m[1], 10); if (n > max) max = n; }
+        if (name === base) sawBareBase = true;
+    }
+    if (sawBareBase && max < 1) max = 1;
+    return max + 1;
+}
+
+// Split a base track (identified by its <trk> element) at the point closest to
+// the click. Names respect any existing "(part N)" suffix — the second half
+// gets the next unused part number for that base name.
+function splitBaseTrackAt(trkEl, latlng) {
+    const doc = state.baseXmlDoc;
+    const allPts = collectAllTrkpts(trkEl);
+    if (allPts.length < 4) { alert('Track too short to split.'); return; }
+    let bestIdx = -1, bestDist = Infinity;
+    for (let i = 0; i < allPts.length; i++) {
+        const p = allPts[i];
+        const lat = parseFloat(p.getAttribute('lat'));
+        const lon = parseFloat(p.getAttribute('lon'));
+        const d = haversineMeters(latlng.lat, latlng.lng, lat, lon);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+    if (bestIdx < 2 || bestIdx > allPts.length - 3) {
+        alert('Too close to an endpoint to split.');
+        return;
+    }
+    pushHistory();
+    let origName = 'Track';
+    for (const child of trkEl.children) {
+        if (child.localName === 'name') {
+            const t = (child.textContent || '').trim();
+            if (t) origName = t;
+            break;
+        }
+    }
+    const buildTrk = (pts, name) => {
+        const trk = doc.createElementNS(GPX_NS, 'trk');
+        const nameEl = doc.createElementNS(GPX_NS, 'name');
+        nameEl.textContent = name;
+        trk.appendChild(nameEl);
+        const trkseg = doc.createElementNS(GPX_NS, 'trkseg');
+        for (const pt of pts) trkseg.appendChild(pt.cloneNode(true));
+        trk.appendChild(trkseg);
+        return trk;
+    };
+    // If the original name already ends with "(part N)", keep the first half's
+    // name intact and give the second half the next unused part number for
+    // that base name. Otherwise start with "(part 1)" and "(part 2)".
+    const partMatch = origName.match(/^(.*?)\s*\(part (\d+)\)\s*$/);
+    let name1, name2;
+    if (partMatch) {
+        const base = partMatch[1];
+        name1 = origName;
+        name2 = `${base} (part ${nextPartNumber(base)})`;
+    } else {
+        name1 = `${origName} (part 1)`;
+        name2 = `${origName} (part 2)`;
+    }
+    // Share the split point in both halves so they visually connect.
+    const trk1 = buildTrk(allPts.slice(0, bestIdx + 1), name1);
+    const trk2 = buildTrk(allPts.slice(bestIdx), name2);
+    trkEl.parentNode.insertBefore(trk1, trkEl);
+    trkEl.parentNode.insertBefore(trk2, trkEl);
+    trkEl.parentNode.removeChild(trkEl);
+    refreshBaseAfterEdit(`Split "${origName}" into 2 tracks.`);
+}
+
+// Create a brand-new empty GPX doc in-memory and activate it. Used when the
+// user starts drawing/waypointing without loading a file first.
+function createBlankGpx() {
+    const xml = '<?xml version="1.0" encoding="UTF-8"?>\n' +
+        '<gpx version="1.1" creator="GPXTools" xmlns="http://www.topografix.com/GPX/1/1"></gpx>\n';
+    const doc = parseGpx(xml);
+    const name = 'Untitled.gpx';
+    state.baseCache.set(name, {
+        xmlDoc: doc,
+        trksegs: [],
+        points: [],
+        size: xml.length,
+    });
+    setActiveBase(name);
+    return doc;
+}
+
+// Snapshot the current base XML so it can be restored later by Undo.
+// Called by every base-modifying operation.
+function pushHistory() {
+    if (!state.baseXmlDoc) return;
+    state.baseHistory.push(new XMLSerializer().serializeToString(state.baseXmlDoc));
+    if (state.baseHistory.length > UNDO_MAX) state.baseHistory.shift();
+    updateUndoButton();
+}
+
+function undo() {
+    // In-progress draw/extend: undo just the most recent point rather than
+    // popping the history stack.
+    if (state.activeTool === 'draw' && state.drawPoints.length) {
+        state.drawPoints.pop();
+        updateDrawPreview();
+        updateUndoButton();
+        return;
+    }
+    if (state.activeTool === 'extend' && state.extendNewPoints.length) {
+        state.extendNewPoints.pop();
+        updateExtendPreview();
+        updateUndoButton();
+        return;
+    }
+
+    if (!state.baseHistory.length) return;
+    const xml = state.baseHistory.pop();
+    const newDoc = parseGpx(xml);
+    state.baseXmlDoc = newDoc;
+    const entry = state.baseCache.get(state.activeBaseName);
+    if (entry) {
+        entry.xmlDoc = newDoc;
+        entry.trksegs = extractTrksegs(newDoc);
+        entry.points = extractBasePoints(newDoc);
+        entry.size = new Blob([xml]).size;
+    }
+    state.basePoints = extractBasePoints(newDoc);
+    const c = baseFeatureCounts(newDoc);
+    document.getElementById('baseInfo').innerHTML =
+        `Active GPX: <b>${state.activeBaseName}</b> — ${c.trksegs} trkseg(s)` +
+        (c.rtes ? ` + ${c.rtes} route(s)` : '') +
+        `, ${state.basePoints.length} points`;
+    drawBase();
+    buildRelevanceGrid();
+    computeAllRelevance();
+    renderBaseList();
+    renderRideList();
+    recompute();
+    if (state.activePanel === 'contents') renderContentsPanel();
+    updateUndoButton();
+    showStatus('Undid last change.');
+}
+
+function updateUndoButton() {
+    const btn = document.querySelector('.tools-panel button[data-action="undo"]');
+    if (!btn) return;
+    const drawing   = state.activeTool === 'draw'   && state.drawPoints.length;
+    const extending = state.activeTool === 'extend' && state.extendNewPoints.length;
+    const canUndo = state.baseHistory.length || drawing || extending;
+    btn.disabled = !canUndo;
+    if (drawing) {
+        btn.textContent = `↶ Undo point (${state.drawPoints.length})`;
+    } else if (extending) {
+        btn.textContent = `↶ Undo point (${state.extendNewPoints.length})`;
+    } else if (state.baseHistory.length) {
+        btn.textContent = `↶ Undo (${state.baseHistory.length})`;
+    } else {
+        btn.textContent = '↶ Undo';
+    }
+}
+
+// Shared cleanup after any structural change to the active base XML.
+function refreshBaseAfterEdit(statusMsg) {
+    const doc = state.baseXmlDoc;
+    const entry = state.baseCache.get(state.activeBaseName);
+    if (entry) {
+        entry.trksegs = extractTrksegs(doc);
+        entry.points = extractBasePoints(doc);
+        const serialized = new XMLSerializer().serializeToString(doc);
+        entry.size = new Blob([serialized]).size;
+    }
+    state.basePoints = extractBasePoints(doc);
+    const c = baseFeatureCounts(doc);
+    document.getElementById('baseInfo').innerHTML =
+        `Active GPX: <b>${state.activeBaseName}</b> — ${c.trksegs} trkseg(s)` +
+        (c.rtes ? ` + ${c.rtes} route(s)` : '') +
+        `, ${state.basePoints.length} points`;
+    drawBase();
+    buildRelevanceGrid();
+    computeAllRelevance();
+    renderBaseList();
+    renderRideList();
+    recompute();
+    if (state.activePanel === 'contents') renderContentsPanel();
+    if (statusMsg) showStatus(statusMsg);
+}
+
+// ---------- Tools panel + Extend/Draw ----------
+function setActiveTool(tool) {
+    // Exit whatever tool is active.
+    if (state.activeTool === 'merge')  { state.mergeSelection = []; }
+    if (state.activeTool === 'extend') { state.extendTarget = null; state.extendNewPoints = []; }
+    if (state.activeTool === 'draw')   { state.drawPoints = []; }
+    clearPreview();
+    hideGhostPoint();
+
+    state.activeTool = tool;
+
+    // Button + cursor state.
+    const panel = document.getElementById('toolsPanel');
+    if (panel) {
+        panel.querySelectorAll('button[data-tool]').forEach(b => {
+            b.classList.toggle('active', b.dataset.tool === tool);
+        });
+        const doneBtn = panel.querySelector('button[data-tool="done"]');
+        const cancelBtn = panel.querySelector('button[data-tool="cancel"]');
+        const show = tool === 'extend' || tool === 'draw' || tool === 'merge';
+        if (doneBtn) doneBtn.style.display = show ? '' : 'none';
+        if (cancelBtn) cancelBtn.style.display = show ? '' : 'none';
+    }
+    const m = document.getElementById('map');
+    m.classList.remove('split-mode', 'merge-mode', 'extend-mode', 'draw-mode');
+    if (tool) m.classList.add(`${tool}-mode`);
+
+    // Show/hide the merge queue.
+    renderMergeQueue();
+    drawBase();
+    drawRide();
+    updateUndoButton();
+
+    // Hint text.
+    const hint = document.getElementById('mergeTracksHint');
+    if (hint && tool !== 'merge') {
+        if (tool === 'extend') {
+            hint.innerHTML = state.extendTarget
+                ? '<div class="hint">Click on the map to add points. Click Done in the tools panel when finished.</div>'
+                : '<div class="hint">Click a base track to select which end to extend.</div>';
+        } else if (tool === 'draw') {
+            hint.innerHTML = '<div class="hint">Click on the map to add points. Click Done in the tools panel when finished.</div>';
+        } else if (tool === 'split') {
+            hint.innerHTML = '<div class="hint">Click on a base track or new segment to split it there.</div>';
+        } else {
+            hint.innerHTML = '';
+        }
+    }
+}
+
+function commitCurrentTool() {
+    if (state.activeTool === 'merge') return finishMergeQueue();
+    if (state.activeTool === 'extend') return finishExtend();
+    if (state.activeTool === 'draw') return finishDraw();
+}
+
+function cancelCurrentTool() { setActiveTool(null); }
+
+// Preview overlay used by Extend / Draw.
+function clearPreview() {
+    if (state.previewLayer) {
+        map.removeLayer(state.previewLayer);
+        state.previewLayer = null;
+    }
+}
+
+function draggablePointMarker(latlng, onDrag) {
+    const m = L.marker(latlng, {
+        icon: L.divIcon({className: 'draw-point-marker', iconSize: [14, 14]}),
+        draggable: true,
+        keyboard: false,
+    });
+    m.on('drag', onDrag);
+    return m;
+}
+
+function updateExtendPreview() {
+    clearPreview();
+    if (!state.extendTarget) return;
+    const {trkEl, appendAt} = state.extendTarget;
+    const existing = collectAllTrkpts(trkEl).map(p => [
+        parseFloat(p.getAttribute('lat')),
+        parseFloat(p.getAttribute('lon')),
+    ]);
+    const newPts = state.extendNewPoints.map(p => [p.lat, p.lon]);
+    const line = L.polyline(newPts, {color: '#22c55e', weight: 4, opacity: 0.95, interactive: false});
+    const bridge = appendAt === 'end'
+        ? (newPts.length ? [existing[existing.length - 1], newPts[0]] : null)
+        : (newPts.length ? [existing[0], newPts[0]] : null);
+    const layers = [
+        L.polyline(existing, {color: '#e63946', weight: 5, opacity: 0.7, dashArray: '4 4', interactive: false}),
+        line,
+    ];
+    if (bridge) {
+        layers.push(L.polyline(bridge, {color: '#22c55e', weight: 2, opacity: 0.5, dashArray: '2 4', interactive: false}));
+    }
+    state.extendNewPoints.forEach((p, i) => {
+        const m = draggablePointMarker([p.lat, p.lon], (e) => {
+            const snap = findSnap(e.latlng);
+            if (snap) { m.setLatLng(snap); state.extendNewPoints[i] = {lat: snap.lat, lon: snap.lng}; }
+            else state.extendNewPoints[i] = {lat: e.latlng.lat, lon: e.latlng.lng};
+            line.setLatLngs(state.extendNewPoints.map(pp => [pp.lat, pp.lon]));
+        });
+        layers.push(m);
+    });
+    state.previewLayer = L.layerGroup(layers).addTo(map);
+}
+
+function updateDrawPreview() {
+    clearPreview();
+    if (!state.drawPoints.length) return;
+    const line = L.polyline(
+        state.drawPoints.map(p => [p.lat, p.lon]),
+        {color: '#22c55e', weight: 4, opacity: 0.95, interactive: false}
+    );
+    const layers = [line];
+    state.drawPoints.forEach((p, i) => {
+        const m = draggablePointMarker([p.lat, p.lon], (e) => {
+            const snap = findSnap(e.latlng);
+            if (snap) { m.setLatLng(snap); state.drawPoints[i] = {lat: snap.lat, lon: snap.lng}; }
+            else state.drawPoints[i] = {lat: e.latlng.lat, lon: e.latlng.lng};
+            line.setLatLngs(state.drawPoints.map(pp => [pp.lat, pp.lon]));
+        });
+        layers.push(m);
+    });
+    state.previewLayer = L.layerGroup(layers).addTo(map);
+}
+
+function handleExtendBaseClick(line, latlng) {
+    if (state.extendTarget) return; // already have a target
+    const allPts = collectAllTrkpts(line._trkEl);
+    if (!allPts.length) return;
+    // Find the point in the track physically closest to the click. Extend
+    // from whichever endpoint that closest point is nearer to (in the track's
+    // point sequence, not by time).
+    let bestIdx = 0, bestDist = Infinity;
+    for (let i = 0; i < allPts.length; i++) {
+        const d = haversineMeters(
+            latlng.lat, latlng.lng,
+            parseFloat(allPts[i].getAttribute('lat')),
+            parseFloat(allPts[i].getAttribute('lon')));
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+    const appendAt = bestIdx < allPts.length / 2 ? 'start' : 'end';
+    state.extendTarget = {trkEl: line._trkEl, appendAt};
+    updateExtendPreview();
+    const hint = document.getElementById('mergeTracksHint');
+    if (hint) hint.innerHTML =
+        `<div class="hint">Extending <b>${line._trkName}</b> from its ${appendAt}. Click the map to add points.</div>`;
+}
+
+function finishExtend() {
+    if (!state.extendTarget) { setActiveTool(null); return; }
+    if (!state.extendNewPoints.length) { setActiveTool(null); return; }
+    pushHistory();
+    const doc = state.baseXmlDoc;
+    const {trkEl, appendAt} = state.extendTarget;
+    const trksegs = trkEl.getElementsByTagName('trkseg');
+    if (!trksegs.length) { setActiveTool(null); return; }
+    const targetSeg = appendAt === 'end' ? trksegs[trksegs.length - 1] : trksegs[0];
+    const newPtEls = state.extendNewPoints.map(p => {
+        const pt = doc.createElementNS(GPX_NS, 'trkpt');
+        pt.setAttribute('lat', p.lat.toFixed(7));
+        pt.setAttribute('lon', p.lon.toFixed(7));
+        return pt;
+    });
+    if (appendAt === 'end') {
+        for (const pt of newPtEls) targetSeg.appendChild(pt);
+    } else {
+        // Insert at the top of targetSeg, reversed so first-clicked ends nearest the existing start.
+        const firstExisting = targetSeg.getElementsByTagName('trkpt')[0];
+        for (const pt of newPtEls.slice().reverse()) {
+            targetSeg.insertBefore(pt, firstExisting);
+        }
+    }
+    const count = newPtEls.length;
+    refreshBaseAfterEdit(`Extended track with ${count} point${count === 1 ? '' : 's'}.`);
+    setActiveTool(null);
+}
+
+function finishDraw() {
+    if (state.drawPoints.length < 2) { alert('Draw at least 2 points.'); return; }
+    if (!state.baseXmlDoc) createBlankGpx();
+    const name = prompt('Name for new track:', 'New track');
+    if (!name || !name.trim()) return;
+    pushHistory();
+    const doc = state.baseXmlDoc;
+    const trk = doc.createElementNS(GPX_NS, 'trk');
+    const nameEl = doc.createElementNS(GPX_NS, 'name');
+    nameEl.textContent = name.trim();
+    trk.appendChild(nameEl);
+    const trkseg = doc.createElementNS(GPX_NS, 'trkseg');
+    for (const p of state.drawPoints) {
+        const pt = doc.createElementNS(GPX_NS, 'trkpt');
+        pt.setAttribute('lat', p.lat.toFixed(7));
+        pt.setAttribute('lon', p.lon.toFixed(7));
+        trkseg.appendChild(pt);
+    }
+    trk.appendChild(trkseg);
+    doc.getElementsByTagName('gpx')[0].appendChild(trk);
+    const count = state.drawPoints.length;
+    refreshBaseAfterEdit(`Drew "${name.trim()}" with ${count} points.`);
+    setActiveTool(null);
+}
+
+function addWaypoint(lat, lon, name, desc) {
+    if (!state.baseXmlDoc) createBlankGpx();
+    pushHistory();
+    const doc = state.baseXmlDoc;
+    const wpt = doc.createElementNS(GPX_NS, 'wpt');
+    wpt.setAttribute('lat', lat.toFixed(7));
+    wpt.setAttribute('lon', lon.toFixed(7));
+    setDirectChild(wpt, 'name', name || 'Waypoint');
+    if (desc) setDirectChild(wpt, 'desc', desc);
+    // GPX schema puts wpts before rte/trk. Insert before the first one if any.
+    const gpxRoot = doc.getElementsByTagName('gpx')[0];
+    const firstAnchor = doc.querySelector('rte, trk');
+    if (firstAnchor) gpxRoot.insertBefore(wpt, firstAnchor);
+    else gpxRoot.appendChild(wpt);
+    refreshBaseAfterEdit(`Added waypoint "${name || 'Waypoint'}".`);
+}
+
+function editWaypoint(wptEl) {
+    const currentName = directChildText(wptEl, 'name');
+    const currentDesc = directChildText(wptEl, 'desc');
+    const newName = prompt('Waypoint name:', currentName);
+    if (newName === null) return;
+    const newDesc = prompt('Description (leave blank to remove):', currentDesc);
+    if (newDesc === null) return;
+    pushHistory();
+    setDirectChild(wptEl, 'name', newName.trim() || 'Waypoint');
+    setDirectChild(wptEl, 'desc', newDesc);
+    refreshBaseAfterEdit(`Edited waypoint.`);
+}
+
+function deleteWaypointEl(wptEl) {
+    const name = directChildText(wptEl, 'name') || '(waypoint)';
+    if (!confirm(`Delete waypoint "${name}"?`)) return;
+    pushHistory();
+    wptEl.parentNode.removeChild(wptEl);
+    refreshBaseAfterEdit(`Deleted waypoint "${name}".`);
+}
+
+// Map-level click for Extend / Draw / Add Waypoint (adds points when clicking blank map).
+// Polyline click handlers use L.DomEvent.stop to prevent propagation here.
+map.on('click', (e) => {
+    if (state.activeTool === 'extend' && state.extendTarget) {
+        const snap = findSnap(e.latlng);
+        const p = snap || e.latlng;
+        state.extendNewPoints.push({lat: p.lat, lon: p.lng});
+        updateExtendPreview();
+        updateUndoButton();
+    } else if (state.activeTool === 'draw') {
+        const snap = findSnap(e.latlng);
+        const p = snap || e.latlng;
+        state.drawPoints.push({lat: p.lat, lon: p.lng});
+        updateDrawPreview();
+        updateUndoButton();
+    } else if (state.activeTool === 'addwpt') {
+        const name = prompt('Waypoint name:', '');
+        if (name === null) { setActiveTool(null); return; }
+        const desc = prompt('Description (optional):', '');
+        if (desc === null) { setActiveTool(null); return; }
+        addWaypoint(e.latlng.lat, e.latlng.lng, name.trim() || 'Waypoint', desc.trim());
+        setActiveTool(null);
+    } else if (state.activeTool === 'split') {
+        // Click missed the polyline itself — fall back to nearest candidate.
+        const cand = findSplitCandidate(e.latlng);
+        if (!cand) return;
+        if (cand.kind === 'base') {
+            splitBaseTrackAt(cand.line._trkEl, cand.latlng);
+        } else {
+            const seg = state.segments.find(s => s.layer === cand.line);
+            if (seg) splitSegmentAt(seg.id, cand.latlng);
+        }
+    }
+});
+
+// Snap-preview ghost while drawing/extending so users see when their next
+// click will lock to a base track; also a split-candidate ghost so they can
+// hover near (not on) a track and see where the split will land.
+map.on('mousemove', (e) => {
+    const t = state.activeTool;
+    if (t === 'draw' || (t === 'extend' && state.extendTarget)) {
+        const snap = findSnap(e.latlng);
+        if (snap) showGhostPoint(snap);
+        else hideGhostPoint();
+    } else if (t === 'split') {
+        const cand = findSplitCandidate(e.latlng);
+        if (cand) showGhostPoint(cand.latlng);
+        else hideGhostPoint();
+    }
+});

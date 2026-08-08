@@ -2,20 +2,47 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GPX Tools</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<button id="mobileMenuToggle" title="Menu">☰</button>
+<div id="mobileBackdrop"></div>
+
+<div id="settingsModal" hidden>
+    <div class="modal-backdrop"></div>
+    <div class="modal-box" role="dialog" aria-labelledby="settingsModalTitle">
+        <div class="modal-header">
+            <h2 id="settingsModalTitle">Settings</h2>
+            <button class="modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="setting-row">
+                <label class="setting-label">Units</label>
+                <div class="setting-value">
+                    <label class="unit-opt"><input type="radio" name="units" value="imperial"> Imperial</label>
+                    <label class="unit-opt"><input type="radio" name="units" value="metric"> Metric</label>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div id="sidebar">
-    <h1>GPX Tools</h1>
+    <div class="header-bar">
+        <h1>Trailblaze</h1>
+        <button id="settingsToggle" class="header-btn" title="Settings">⚙</button>
+    </div>
+
 
     <section>
-        <h2>Base map files</h2>
+        <h2>GPX Import</h2>
         <p class="hint">Drop GPX files here or click to browse. Radio picks the active one.</p>
         <label class="dropzone" id="baseDropzone">
             <input type="file" id="baseFiles" accept=".gpx" multiple>
-            <span class="dropzone-label">Drop base GPX files or click to browse</span>
+            <span class="dropzone-label">Drop GPX files or click to browse</span>
         </label>
         <div class="file-list" id="baseList"></div>
         <div id="baseInfo" class="info"></div>
@@ -24,8 +51,8 @@
 
     <div id="contentsPanel" style="display:none">
         <section>
-            <h2>Base contents</h2>
-            <p class="hint">Everything in the active base file. Click any item to zoom to it.</p>
+            <h2>GPX Contents</h2>
+            <p class="hint">Everything in the active GPX. Click any item to zoom to it.</p>
             <div id="contentsList"></div>
         </section>
     </div>
@@ -50,11 +77,6 @@
         <section>
             <h2>Duplicate detection</h2>
             <label>
-                Units:
-                <label class="unit-opt"><input type="radio" name="units" value="imperial"> Imperial</label>
-                <label class="unit-opt"><input type="radio" name="units" value="metric"> Metric</label>
-            </label>
-            <label>
                 Threshold:
                 <input type="number" id="threshold" value="15" min="1" step="1">
                 <span id="thresholdUnit">m</span>
@@ -77,9 +99,10 @@
         </section>
 
         <section>
-            <h2>Merge</h2>
+            <h2>Merge into base</h2>
             <div id="stats" class="info"></div>
-            <button id="download" disabled>Download merged GPX</button>
+            <button id="download" disabled>Merge selected into base</button>
+            <p class="hint">Adds included segments to the active base in-memory. Use the Export tool in the map panel to save the base to a GPX file.</p>
             <div id="mergeStatus" class="info"></div>
         </section>
 
@@ -103,6 +126,13 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/esri-leaflet@3.0.14/dist/esri-leaflet.js"></script>
-<script src="app.js"></script>
+<script src="js/config.js"></script>
+<script src="js/state.js"></script>
+<script src="js/gpx.js"></script>
+<script src="js/spatial.js"></script>
+<script src="js/render.js"></script>
+<script src="js/compare.js"></script>
+<script src="js/tools.js"></script>
+<script src="js/ui.js"></script>
 </body>
 </html>
