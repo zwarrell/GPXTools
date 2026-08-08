@@ -1,14 +1,48 @@
 // ---------- Map ----------
 const map = L.map('map').setView([40.76, -112.78], 12);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '© OpenStreetMap'
-}).addTo(map);
 
 // Base polylines live in a pane above the default overlay pane so their
 // hover/click events aren't stolen by ride polylines drawn on top of them.
 map.createPane('basePane');
 map.getPane('basePane').style.zIndex = 450;
+
+const baseLayers = {
+    "OpenStreetMap": L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '© OpenStreetMap',
+        className: 'invert-in-dark',
+    }),
+    "USGS Topo": L.tileLayer('https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 16,
+        attribution: 'Tiles courtesy of the U.S. Geological Survey',
+        className: 'invert-in-dark',
+    }),
+    "OpenTopoMap": L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+        maxZoom: 17,
+        subdomains: 'abc',
+        attribution: '© OpenStreetMap · SRTM · OpenTopoMap (CC-BY-SA)',
+        className: 'invert-in-dark',
+    }),
+};
+
+// MVUM via esri-leaflet's dynamicMapLayer. The USFS ArcGIS service returns a
+// fresh export image on each moveend; updateInterval throttles requests so
+// pans that end quickly don't fire a chain of stale ones.
+const overlayLayers = {
+    "USFS MVUM (motor use)": L.esri.dynamicMapLayer({
+        url: 'https://apps.fs.usda.gov/arcx/rest/services/EDW/EDW_MVUM_01/MapServer',
+        opacity: 0.85,
+        updateInterval: 150,
+        useCors: true,
+        f: 'image',
+        attribution: '© US Forest Service',
+    }),
+};
+
+// Default base
+baseLayers["OpenStreetMap"].addTo(map);
+
+L.control.layers(baseLayers, overlayLayers, {position: 'topright', collapsed: true}).addTo(map);
 
 // ---------- State ----------
 const state = {
@@ -49,12 +83,23 @@ state.mergedHistory = (() => {
     try { return JSON.parse(localStorage.getItem(MERGED_KEY)) || []; }
     catch { return []; }
 })();
-// Split-mode: when on, clicking a segment on the map splits it instead of toggling.
-state.splitMode = false;
-// Merge-tracks mode: click any number of tracks (base or ride novel segments)
-// in order; they get chain-joined at their closest endpoints on Finish.
-state.mergeMode = false;
+// Active map tool: null, 'split', 'merge', 'extend', or 'draw'.
+// Only one tool can be active at a time.
+state.activeTool = null;
+// Active sidebar panel: 'compare' or 'contents'. Independent of map tool;
+// only one panel visible at a time. Persisted across reloads so users don't
+// have to re-open Compare every session.
+state.activePanel = localStorage.getItem('gpxtools.activePanel') || null;
+state.waypointLayer = null;
 state.mergeSelection = []; // [{kind: 'baseTrack'|'rideSeg', ref, name}]
+state.extendTarget = null; // {trkEl, appendAt: 'start'|'end'}
+state.extendNewPoints = []; // [{lat, lon}]
+state.drawPoints = []; // [{lat, lon}]
+state.previewLayer = null;
+
+// Back-compat getters — existing code paths reference these.
+Object.defineProperty(state, 'splitMode', { get() { return this.activeTool === 'split'; } });
+Object.defineProperty(state, 'mergeMode', { get() { return this.activeTool === 'merge'; } });
 
 function isSelectedForMerge(kind, ref) {
     return state.mergeSelection.some(s => s.kind === kind && s.ref === ref);
@@ -412,9 +457,15 @@ function drawBase() {
         line._trkName = name;
         line.bindTooltip(name, {sticky: true, direction: 'top'});
         line.on('click', (e) => {
-            if (state.mergeMode) {
+            L.DomEvent.stop(e); // don't bubble to map click
+            const tool = state.activeTool;
+            if (tool === 'merge') {
                 handleMergeTrackClick(line, e.latlng);
-            } else {
+            } else if (tool === 'split') {
+                splitBaseTrackAt(line._trkEl, e.latlng);
+            } else if (tool === 'extend') {
+                handleExtendBaseClick(line, e.latlng);
+            } else if (!tool) {
                 L.popup().setLatLng(e.latlng).setContent(name).openOn(map);
             }
         });
@@ -464,11 +515,62 @@ function drawBase() {
     }
 
     state.baseLayer = L.layerGroup(polylines).addTo(map);
+    drawWaypoints();
     console.log(
         `drawBase: ${counts.trkseg} trkseg(s) + ${counts.rte} rte(s), ` +
         `${polylines.length} rendered, ${counts.skipped} skipped (fewer than 2 valid points), ` +
         `${counts.points} total points`
     );
+}
+
+function directChildText(el, tag) {
+    if (!el) return '';
+    for (const child of el.children) {
+        if (child.localName === tag) return (child.textContent || '').trim();
+    }
+    return '';
+}
+
+function drawWaypoints() {
+    if (state.waypointLayer) {
+        map.removeLayer(state.waypointLayer);
+        state.waypointLayer = null;
+    }
+    if (!state.baseXmlDoc) return;
+    const wpts = [...state.baseXmlDoc.getElementsByTagName('wpt')];
+    if (!wpts.length) return;
+    const markers = [];
+    for (const wpt of wpts) {
+        const lat = parseFloat(wpt.getAttribute('lat'));
+        const lon = parseFloat(wpt.getAttribute('lon'));
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        const name = directChildText(wpt, 'name') || '(waypoint)';
+        const desc = directChildText(wpt, 'desc');
+        const cmt  = directChildText(wpt, 'cmt');
+        const ele  = directChildText(wpt, 'ele');
+        const sym  = directChildText(wpt, 'sym');
+        const marker = L.circleMarker([lat, lon], {
+            radius: 6,
+            color: '#0066cc',
+            fillColor: '#4a90d9',
+            fillOpacity: 0.9,
+            weight: 2,
+            pane: 'basePane',
+        });
+        marker._wptEl = wpt;
+        marker._wptName = name;
+        marker.bindTooltip(name, {direction: 'top'});
+        const parts = [`<b>${escapeHtml(name)}</b>`];
+        if (sym) parts.push(`<i>${escapeHtml(sym)}</i>`);
+        if (desc) parts.push(escapeHtml(desc));
+        if (cmt && cmt !== desc) parts.push(escapeHtml(cmt));
+        if (ele) parts.push(`Elev: ${ele} m`);
+        marker.bindPopup(parts.join('<br>'));
+        markers.push(marker);
+    }
+    if (markers.length) {
+        state.waypointLayer = L.layerGroup(markers).addTo(map);
+    }
 }
 
 function fitBoundsBase() {
@@ -500,9 +602,11 @@ function drawRide() {
         const line = L.polyline(latlngs, style);
         if (seg.novel) {
             line.on('click', (e) => {
-                if (state.mergeMode) handleMergeSegClick(seg);
-                else if (state.splitMode) splitSegmentAt(seg.id, e.latlng);
-                else toggleSegment(seg.id);
+                L.DomEvent.stop(e);
+                const tool = state.activeTool;
+                if (tool === 'merge') handleMergeSegClick(seg);
+                else if (tool === 'split') splitSegmentAt(seg.id, e.latlng);
+                else if (!tool) toggleSegment(seg.id);
             });
             line.on('mouseover', () => highlightSegmentItem(seg.id, true));
             line.on('mouseout', () => highlightSegmentItem(seg.id, false));
@@ -917,6 +1021,7 @@ function setActiveBase(name) {
     renderRideList();
     updateRideInfo();
     recompute();
+    if (state.activePanel === 'contents') renderContentsPanel();
 }
 
 function toggleActiveRide(name, on) {
@@ -995,15 +1100,7 @@ function joinEndFor(trkEl, latlng) {
 }
 
 function setMergeTracksMode(on) {
-    state.mergeMode = on;
-    state.mergeSelection = [];
-    const btn = document.getElementById('mergeTracksMode');
-    btn.textContent = `Merge tracks: ${on ? 'on' : 'off'}`;
-    btn.classList.toggle('active', on);
-    document.getElementById('map').classList.toggle('merge-mode', on);
-    renderMergeQueue();
-    drawBase();
-    drawRide();
+    setActiveTool(on ? 'merge' : null);
 }
 
 function handleMergeTrackClick(line) {
@@ -1166,8 +1263,59 @@ function performMultiMerge(selections, newName) {
         }
     }
 
-    // Refresh base state — ride segments will re-classify against the updated base
-    // on the next recompute, so any absorbed ride segments become duplicates.
+    const pieces = selections.map(s => `"${s.name}"`).join(' + ');
+    refreshBaseAfterEdit(`Merged ${pieces} into "${newName}".`);
+}
+
+// Split a base track (identified by its <trk> element) at the point closest to
+// the click. Produces two new <trk>s with "(part 1)" / "(part 2)" appended,
+// replacing the original.
+function splitBaseTrackAt(trkEl, latlng) {
+    const doc = state.baseXmlDoc;
+    const allPts = collectAllTrkpts(trkEl);
+    if (allPts.length < 4) { alert('Track too short to split.'); return; }
+    let bestIdx = -1, bestDist = Infinity;
+    for (let i = 0; i < allPts.length; i++) {
+        const p = allPts[i];
+        const lat = parseFloat(p.getAttribute('lat'));
+        const lon = parseFloat(p.getAttribute('lon'));
+        const d = haversineMeters(latlng.lat, latlng.lng, lat, lon);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+    if (bestIdx < 2 || bestIdx > allPts.length - 3) {
+        alert('Too close to an endpoint to split.');
+        return;
+    }
+    let origName = 'Track';
+    for (const child of trkEl.children) {
+        if (child.localName === 'name') {
+            const t = (child.textContent || '').trim();
+            if (t) origName = t;
+            break;
+        }
+    }
+    const buildTrk = (pts, name) => {
+        const trk = doc.createElementNS(GPX_NS, 'trk');
+        const nameEl = doc.createElementNS(GPX_NS, 'name');
+        nameEl.textContent = name;
+        trk.appendChild(nameEl);
+        const trkseg = doc.createElementNS(GPX_NS, 'trkseg');
+        for (const pt of pts) trkseg.appendChild(pt.cloneNode(true));
+        trk.appendChild(trkseg);
+        return trk;
+    };
+    // Share the split point in both halves so they visually connect.
+    const trk1 = buildTrk(allPts.slice(0, bestIdx + 1), `${origName} (part 1)`);
+    const trk2 = buildTrk(allPts.slice(bestIdx), `${origName} (part 2)`);
+    trkEl.parentNode.insertBefore(trk1, trkEl);
+    trkEl.parentNode.insertBefore(trk2, trkEl);
+    trkEl.parentNode.removeChild(trkEl);
+    refreshBaseAfterEdit(`Split "${origName}" into 2 tracks.`);
+}
+
+// Shared cleanup after any structural change to the active base XML.
+function refreshBaseAfterEdit(statusMsg) {
+    const doc = state.baseXmlDoc;
     const entry = state.baseCache.get(state.activeBaseName);
     if (entry) {
         entry.trksegs = extractTrksegs(doc);
@@ -1187,9 +1335,401 @@ function performMultiMerge(selections, newName) {
     renderBaseList();
     renderRideList();
     recompute();
-    const pieces = selections.map(s => `"${s.name}"`).join(' + ');
-    showStatus(`Merged ${pieces} into "${newName}".`);
+    if (state.activePanel === 'contents') renderContentsPanel();
+    if (statusMsg) showStatus(statusMsg);
 }
+
+// ---------- Tools panel + Extend/Draw ----------
+function setActiveTool(tool) {
+    // Exit whatever tool is active.
+    if (state.activeTool === 'merge')  { state.mergeSelection = []; }
+    if (state.activeTool === 'extend') { state.extendTarget = null; state.extendNewPoints = []; }
+    if (state.activeTool === 'draw')   { state.drawPoints = []; }
+    clearPreview();
+
+    state.activeTool = tool;
+
+    // Button + cursor state.
+    const panel = document.getElementById('toolsPanel');
+    if (panel) {
+        panel.querySelectorAll('button[data-tool]').forEach(b => {
+            b.classList.toggle('active', b.dataset.tool === tool);
+        });
+        const doneBtn = panel.querySelector('button[data-tool="done"]');
+        const cancelBtn = panel.querySelector('button[data-tool="cancel"]');
+        const show = tool === 'extend' || tool === 'draw' || tool === 'merge';
+        if (doneBtn) doneBtn.style.display = show ? '' : 'none';
+        if (cancelBtn) cancelBtn.style.display = show ? '' : 'none';
+    }
+    const m = document.getElementById('map');
+    m.classList.remove('split-mode', 'merge-mode', 'extend-mode', 'draw-mode');
+    if (tool) m.classList.add(`${tool}-mode`);
+
+    // Show/hide the merge queue.
+    renderMergeQueue();
+    drawBase();
+    drawRide();
+
+    // Hint text.
+    const hint = document.getElementById('mergeTracksHint');
+    if (hint && tool !== 'merge') {
+        if (tool === 'extend') {
+            hint.innerHTML = state.extendTarget
+                ? '<div class="hint">Click on the map to add points. Click Done in the tools panel when finished.</div>'
+                : '<div class="hint">Click a base track to select which end to extend.</div>';
+        } else if (tool === 'draw') {
+            hint.innerHTML = '<div class="hint">Click on the map to add points. Click Done in the tools panel when finished.</div>';
+        } else if (tool === 'split') {
+            hint.innerHTML = '<div class="hint">Click on a base track or new segment to split it there.</div>';
+        } else {
+            hint.innerHTML = '';
+        }
+    }
+}
+
+function commitCurrentTool() {
+    if (state.activeTool === 'merge') return finishMergeQueue();
+    if (state.activeTool === 'extend') return finishExtend();
+    if (state.activeTool === 'draw') return finishDraw();
+}
+
+function cancelCurrentTool() { setActiveTool(null); }
+
+// Preview overlay used by Extend / Draw.
+function clearPreview() {
+    if (state.previewLayer) {
+        map.removeLayer(state.previewLayer);
+        state.previewLayer = null;
+    }
+}
+
+function updateExtendPreview() {
+    clearPreview();
+    if (!state.extendTarget) return;
+    const {trkEl, appendAt} = state.extendTarget;
+    const existing = collectAllTrkpts(trkEl).map(p => [
+        parseFloat(p.getAttribute('lat')),
+        parseFloat(p.getAttribute('lon')),
+    ]);
+    const newPts = state.extendNewPoints.map(p => [p.lat, p.lon]);
+    // Draw the target existing track in a highlight color and the new points
+    // extending from the chosen end.
+    const bridge = appendAt === 'end'
+        ? (newPts.length ? [existing[existing.length - 1], newPts[0]] : null)
+        : (newPts.length ? [existing[0], newPts[0]] : null);
+    const layers = [
+        L.polyline(existing, {color: '#e63946', weight: 5, opacity: 0.7, dashArray: '4 4'}),
+    ];
+    if (newPts.length) {
+        layers.push(L.polyline(newPts, {color: '#22c55e', weight: 4, opacity: 0.95}));
+        for (const p of state.extendNewPoints) {
+            layers.push(L.circleMarker([p.lat, p.lon], {
+                radius: 5, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1, weight: 1,
+            }));
+        }
+        if (bridge) {
+            layers.push(L.polyline(bridge, {color: '#22c55e', weight: 2, opacity: 0.5, dashArray: '2 4'}));
+        }
+    }
+    state.previewLayer = L.layerGroup(layers).addTo(map);
+}
+
+function updateDrawPreview() {
+    clearPreview();
+    if (!state.drawPoints.length) return;
+    const latlngs = state.drawPoints.map(p => [p.lat, p.lon]);
+    const layers = [L.polyline(latlngs, {color: '#22c55e', weight: 4, opacity: 0.95})];
+    for (const p of state.drawPoints) {
+        layers.push(L.circleMarker([p.lat, p.lon], {
+            radius: 5, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1, weight: 1,
+        }));
+    }
+    state.previewLayer = L.layerGroup(layers).addTo(map);
+}
+
+function handleExtendBaseClick(line, latlng) {
+    if (state.extendTarget) return; // already have a target
+    const allPts = collectAllTrkpts(line._trkEl);
+    if (!allPts.length) return;
+    const dTo = pt => haversineMeters(
+        latlng.lat, latlng.lng,
+        parseFloat(pt.getAttribute('lat')), parseFloat(pt.getAttribute('lon')));
+    const appendAt = dTo(allPts[allPts.length - 1]) < dTo(allPts[0]) ? 'end' : 'start';
+    state.extendTarget = {trkEl: line._trkEl, appendAt};
+    updateExtendPreview();
+    const hint = document.getElementById('mergeTracksHint');
+    if (hint) hint.innerHTML =
+        `<div class="hint">Extending <b>${line._trkName}</b> from its ${appendAt}. Click the map to add points.</div>`;
+}
+
+function finishExtend() {
+    if (!state.extendTarget) { setActiveTool(null); return; }
+    if (!state.extendNewPoints.length) { setActiveTool(null); return; }
+    const doc = state.baseXmlDoc;
+    const {trkEl, appendAt} = state.extendTarget;
+    const trksegs = trkEl.getElementsByTagName('trkseg');
+    if (!trksegs.length) { setActiveTool(null); return; }
+    const targetSeg = appendAt === 'end' ? trksegs[trksegs.length - 1] : trksegs[0];
+    const newPtEls = state.extendNewPoints.map(p => {
+        const pt = doc.createElementNS(GPX_NS, 'trkpt');
+        pt.setAttribute('lat', p.lat.toFixed(7));
+        pt.setAttribute('lon', p.lon.toFixed(7));
+        return pt;
+    });
+    if (appendAt === 'end') {
+        for (const pt of newPtEls) targetSeg.appendChild(pt);
+    } else {
+        // Insert at the top of targetSeg, reversed so first-clicked ends nearest the existing start.
+        const firstExisting = targetSeg.getElementsByTagName('trkpt')[0];
+        for (const pt of newPtEls.slice().reverse()) {
+            targetSeg.insertBefore(pt, firstExisting);
+        }
+    }
+    const count = newPtEls.length;
+    refreshBaseAfterEdit(`Extended track with ${count} point${count === 1 ? '' : 's'}.`);
+    setActiveTool(null);
+}
+
+function finishDraw() {
+    if (state.drawPoints.length < 2) { alert('Draw at least 2 points.'); return; }
+    if (!state.baseXmlDoc) { alert('Load a base map first — drawn tracks are added to the base.'); return; }
+    const name = prompt('Name for new track:', 'New track');
+    if (!name || !name.trim()) return;
+    const doc = state.baseXmlDoc;
+    const trk = doc.createElementNS(GPX_NS, 'trk');
+    const nameEl = doc.createElementNS(GPX_NS, 'name');
+    nameEl.textContent = name.trim();
+    trk.appendChild(nameEl);
+    const trkseg = doc.createElementNS(GPX_NS, 'trkseg');
+    for (const p of state.drawPoints) {
+        const pt = doc.createElementNS(GPX_NS, 'trkpt');
+        pt.setAttribute('lat', p.lat.toFixed(7));
+        pt.setAttribute('lon', p.lon.toFixed(7));
+        trkseg.appendChild(pt);
+    }
+    trk.appendChild(trkseg);
+    doc.getElementsByTagName('gpx')[0].appendChild(trk);
+    const count = state.drawPoints.length;
+    refreshBaseAfterEdit(`Drew "${name.trim()}" with ${count} points.`);
+    setActiveTool(null);
+}
+
+// ---------- Sidebar panels (Compare / Base contents) ----------
+function togglePanel(panel) {
+    const newVal = state.activePanel === panel ? null : panel;
+    state.activePanel = newVal;
+    if (newVal) localStorage.setItem('gpxtools.activePanel', newVal);
+    else localStorage.removeItem('gpxtools.activePanel');
+    updatePanelVisibility();
+    if (newVal === 'contents') renderContentsPanel();
+}
+
+function updatePanelVisibility() {
+    document.getElementById('comparePanel').style.display  = state.activePanel === 'compare'  ? '' : 'none';
+    document.getElementById('contentsPanel').style.display = state.activePanel === 'contents' ? '' : 'none';
+    document.body.classList.toggle('compare-active', state.activePanel === 'compare');
+    // Update tools panel button state.
+    const panelEl = document.getElementById('toolsPanel');
+    if (panelEl) {
+        panelEl.querySelectorAll('button[data-panel]').forEach(b => {
+            b.classList.toggle('active', b.dataset.panel === state.activePanel);
+        });
+    }
+}
+
+function renderContentsPanel() {
+    const el = document.getElementById('contentsList');
+    if (!el) return;
+    if (!state.baseXmlDoc) {
+        el.innerHTML = '<div class="hint">Load a base map first.</div>';
+        return;
+    }
+    const doc = state.baseXmlDoc;
+    const html = [];
+
+    const trks = [...doc.getElementsByTagName('trk')];
+    if (trks.length) {
+        html.push(`<div class="contents-group">Tracks (${trks.length})</div>`);
+        trks.forEach((trk, i) => {
+            const name = directChildText(trk, 'name') || `(track ${i + 1})`;
+            const pts = collectAllTrkpts(trk);
+            const coords = pts.map(p => ({
+                lat: parseFloat(p.getAttribute('lat')),
+                lon: parseFloat(p.getAttribute('lon')),
+            }));
+            const len = totalDistance(coords);
+            html.push(
+                `<div class="contents-item" data-kind="trk" data-idx="${i}">
+                    <span class="cn-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+                    <span class="cn-meta">${pts.length} pts · ${fmtLongDist(len)}</span>
+                    <button data-remove="trk:${i}" title="Delete">×</button>
+                </div>`
+            );
+        });
+    }
+
+    const rtes = [...doc.getElementsByTagName('rte')];
+    if (rtes.length) {
+        html.push(`<div class="contents-group">Routes (${rtes.length})</div>`);
+        rtes.forEach((rte, i) => {
+            const name = directChildText(rte, 'name') || `(route ${i + 1})`;
+            const rtepts = [...rte.getElementsByTagName('rtept')];
+            const coords = rtepts.map(p => ({
+                lat: parseFloat(p.getAttribute('lat')),
+                lon: parseFloat(p.getAttribute('lon')),
+            }));
+            const len = totalDistance(coords);
+            html.push(
+                `<div class="contents-item" data-kind="rte" data-idx="${i}">
+                    <span class="cn-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+                    <span class="cn-meta">${rtepts.length} pts · ${fmtLongDist(len)}</span>
+                    <button data-remove="rte:${i}" title="Delete">×</button>
+                </div>`
+            );
+        });
+    }
+
+    const wpts = [...doc.getElementsByTagName('wpt')];
+    if (wpts.length) {
+        html.push(`<div class="contents-group">Waypoints (${wpts.length})</div>`);
+        wpts.forEach((wpt, i) => {
+            const name = directChildText(wpt, 'name') || `(waypoint ${i + 1})`;
+            const desc = directChildText(wpt, 'desc');
+            const sym  = directChildText(wpt, 'sym');
+            const meta = sym ? sym : '';
+            html.push(
+                `<div class="contents-item" data-kind="wpt" data-idx="${i}">
+                    <span class="cn-name" title="${escapeHtml(desc || name)}">${escapeHtml(name)}</span>
+                    <span class="cn-meta">${escapeHtml(meta)}</span>
+                    <button data-remove="wpt:${i}" title="Delete">×</button>
+                </div>`
+            );
+        });
+    }
+
+    if (!html.length) html.push('<div class="hint">Empty base file.</div>');
+    el.innerHTML = html.join('');
+
+    el.querySelectorAll('.contents-item').forEach(row => {
+        row.addEventListener('click', (e) => {
+            if (e.target.tagName === 'BUTTON') return;
+            zoomToContentsItem(row.dataset.kind, +row.dataset.idx);
+        });
+    });
+    el.querySelectorAll('button[data-remove]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const [kind, idxStr] = btn.dataset.remove.split(':');
+            removeContentsItem(kind, +idxStr);
+        });
+    });
+}
+
+function zoomToContentsItem(kind, idx) {
+    const doc = state.baseXmlDoc;
+    if (!doc) return;
+    if (kind === 'trk') {
+        const trk = doc.getElementsByTagName('trk')[idx];
+        if (!trk) return;
+        const pts = collectAllTrkpts(trk).map(p => [
+            parseFloat(p.getAttribute('lat')), parseFloat(p.getAttribute('lon'))
+        ]).filter(([a, b]) => Number.isFinite(a) && Number.isFinite(b));
+        if (pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.15));
+    } else if (kind === 'rte') {
+        const rte = doc.getElementsByTagName('rte')[idx];
+        if (!rte) return;
+        const pts = [...rte.getElementsByTagName('rtept')].map(p => [
+            parseFloat(p.getAttribute('lat')), parseFloat(p.getAttribute('lon'))
+        ]).filter(([a, b]) => Number.isFinite(a) && Number.isFinite(b));
+        if (pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.15));
+    } else if (kind === 'wpt') {
+        const wpt = doc.getElementsByTagName('wpt')[idx];
+        if (!wpt) return;
+        const lat = parseFloat(wpt.getAttribute('lat'));
+        const lon = parseFloat(wpt.getAttribute('lon'));
+        if (Number.isFinite(lat) && Number.isFinite(lon)) {
+            map.setView([lat, lon], Math.max(map.getZoom(), 15));
+            if (state.waypointLayer) {
+                state.waypointLayer.eachLayer(m => {
+                    if (m._wptEl === wpt) m.openPopup();
+                });
+            }
+        }
+    }
+}
+
+function removeContentsItem(kind, idx) {
+    const doc = state.baseXmlDoc;
+    if (!doc) return;
+    const el = doc.getElementsByTagName(kind)[idx];
+    if (!el) return;
+    const name = directChildText(el, 'name') || `(${kind})`;
+    if (!confirm(`Remove ${kind} "${name}"?`)) return;
+    el.parentNode.removeChild(el);
+    refreshBaseAfterEdit(`Removed ${kind} "${name}".`);
+    // refreshBaseAfterEdit doesn't know about the contents panel; re-render it here.
+    if (state.activePanel === 'contents') renderContentsPanel();
+}
+
+// Simple mode: skip the tools panel and lock the compare panel open. This lets
+// simple.html be a stable minimal build while index.html iterates.
+const SIMPLE_MODE = document.body.classList.contains('simple-mode');
+
+// Tools panel — floating Leaflet control on the right.
+const toolsControl = L.control({position: 'topright'});
+toolsControl.onAdd = () => {
+    const div = L.DomUtil.create('div', 'tools-panel leaflet-bar');
+    div.id = 'toolsPanel';
+    div.innerHTML = `
+        <div class="tools-group">
+            <button data-panel="contents" title="Base contents — list every trk, rte, and wpt in the active base">📁 Contents</button>
+            <button data-panel="compare"  title="Compare & merge — the ride-classification workflow">🚴 Compare</button>
+        </div>
+        <div class="tools-separator"></div>
+        <div class="tools-group">
+            <button data-tool="split"  title="Split — click a track to split it at the click point">✂ Split</button>
+            <button data-tool="merge"  title="Merge — click tracks in order to chain-join them">⇆ Merge</button>
+            <button data-tool="extend" title="Extend — click a track, then map points to extend it">➤ Extend</button>
+            <button data-tool="draw"   title="Draw — click map points to draw a new track">✎ Draw</button>
+        </div>
+        <div class="tools-separator"></div>
+        <button data-tool="done"   title="Finish current tool" style="display:none">✓ Done</button>
+        <button data-tool="cancel" title="Cancel current tool" style="display:none">✕ Cancel</button>
+    `;
+    L.DomEvent.disableClickPropagation(div);
+    L.DomEvent.disableScrollPropagation(div);
+    div.querySelectorAll('button').forEach(b => {
+        b.addEventListener('click', () => {
+            if (b.dataset.panel) return togglePanel(b.dataset.panel);
+            const t = b.dataset.tool;
+            if (t === 'done')   return commitCurrentTool();
+            if (t === 'cancel') return cancelCurrentTool();
+            setActiveTool(state.activeTool === t ? null : t);
+        });
+    });
+    return div;
+};
+
+if (SIMPLE_MODE) {
+    // Force compare panel open and skip the tools panel entirely.
+    state.activePanel = 'compare';
+    document.body.classList.add('compare-active');
+} else {
+    toolsControl.addTo(map);
+    updatePanelVisibility();
+}
+
+// Map-level click for Extend / Draw (adds points when clicking blank map).
+// Polyline click handlers use L.DomEvent.stop to prevent propagation here.
+map.on('click', (e) => {
+    if (state.activeTool === 'extend' && state.extendTarget) {
+        state.extendNewPoints.push({lat: e.latlng.lat, lon: e.latlng.lng});
+        updateExtendPreview();
+    } else if (state.activeTool === 'draw') {
+        state.drawPoints.push({lat: e.latlng.lat, lon: e.latlng.lng});
+        updateDrawPreview();
+    }
+});
 
 // ---------- Wiring ----------
 async function handleBaseFiles(fileList) {
@@ -1311,18 +1851,6 @@ for (const r of document.querySelectorAll('input[name="units"]')) {
     r.addEventListener('click', handler);
 }
 
-document.getElementById('splitMode').addEventListener('click', () => {
-    state.splitMode = !state.splitMode;
-    const btn = document.getElementById('splitMode');
-    btn.textContent = `Split mode: ${state.splitMode ? 'on' : 'off'}`;
-    btn.classList.toggle('active', state.splitMode);
-    document.getElementById('map').classList.toggle('split-mode', state.splitMode);
-});
-
-document.getElementById('mergeTracksMode').addEventListener('click', () => {
-    if (!state.baseXmlDoc) { alert('Load a base map first.'); return; }
-    setMergeTracksMode(!state.mergeMode);
-});
 
 document.getElementById('clearMergedHistory').addEventListener('click', () => {
     if (!state.mergedHistory.length) return;

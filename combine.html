@@ -2,16 +2,19 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>GPX Tools</title>
+<title>GPX Compare & Merge (simple)</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body class="simple-mode">
 <div id="sidebar">
-    <h1>GPX Tools</h1>
+    <h1>GPX Compare & Merge</h1>
+    <p class="hint" style="margin-top:-8px;">
+        Simple mode. The <a href="index.html">full version</a> has the tools panel and base-contents browser.
+    </p>
 
     <section>
-        <h2>Base map files</h2>
+        <h2>1. Base map files</h2>
         <p class="hint">Drop GPX files here or click to browse. Radio picks the active one.</p>
         <label class="dropzone" id="baseDropzone">
             <input type="file" id="baseFiles" accept=".gpx" multiple>
@@ -22,17 +25,9 @@
         <div id="mergeTracksHint" class="info"></div>
     </section>
 
-    <div id="contentsPanel" style="display:none">
+    <div id="comparePanel">
         <section>
-            <h2>Base contents</h2>
-            <p class="hint">Everything in the active base file. Click any item to zoom to it.</p>
-            <div id="contentsList"></div>
-        </section>
-    </div>
-
-    <div id="comparePanel" style="display:none">
-        <section>
-            <h2>New ride files</h2>
+            <h2>2. New ride files</h2>
             <p class="hint">Drop GPX files here or click to browse. Checkboxes pick which to include.</p>
             <label class="dropzone" id="rideDropzone">
                 <input type="file" id="rideFiles" accept=".gpx" multiple>
@@ -48,7 +43,7 @@
         </section>
 
         <section>
-            <h2>Duplicate detection</h2>
+            <h2>3. Duplicate detection</h2>
             <label>
                 Units:
                 <label class="unit-opt"><input type="radio" name="units" value="imperial"> Imperial</label>
@@ -68,7 +63,7 @@
         </section>
 
         <section>
-            <h2>New segments</h2>
+            <h2>4. New segments</h2>
             <div class="segment-actions">
                 <button id="selectAll">Include all</button>
                 <button id="deselectAll">Exclude all</button>
@@ -77,26 +72,31 @@
         </section>
 
         <section>
-            <h2>Merge</h2>
+            <h2>5. Merge</h2>
             <div id="stats" class="info"></div>
             <button id="download" disabled>Download merged GPX</button>
             <div id="mergeStatus" class="info"></div>
         </section>
 
         <section>
-            <h2>Merged history</h2>
+            <h2>6. Merged history</h2>
             <p class="hint">Ride files consumed by past merges — safe to delete from disk.</p>
             <div id="mergedHistory"></div>
             <button id="clearMergedHistory" class="mini">Clear history</button>
         </section>
     </div>
 
+    <!-- contentsPanel needs to exist as a hidden stub so app.js can query it without errors. -->
+    <div id="contentsPanel" style="display:none">
+        <section><div id="contentsList"></div></section>
+    </div>
+
     <div id="legend">
         <div><span class="sw sw-base"></span>Base track</div>
         <div><span class="sw sw-wpt"></span>Waypoint</div>
-        <div class="compare-only"><span class="sw sw-dup"></span>Ride — duplicate</div>
-        <div class="compare-only"><span class="sw sw-novel-on"></span>New — included</div>
-        <div class="compare-only"><span class="sw sw-novel-off"></span>New — excluded</div>
+        <div><span class="sw sw-dup"></span>Ride — duplicate</div>
+        <div><span class="sw sw-novel-on"></span>New — included</div>
+        <div><span class="sw sw-novel-off"></span>New — excluded</div>
     </div>
 </div>
 <div id="map"></div>

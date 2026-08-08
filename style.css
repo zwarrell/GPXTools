@@ -80,6 +80,52 @@ button.mini.active:hover:not(:disabled) { background: #15803d; }
 #map.split-mode .leaflet-interactive { cursor: crosshair !important; }
 #map.merge-mode { cursor: crosshair !important; }
 #map.merge-mode .leaflet-interactive { cursor: pointer !important; }
+#map.extend-mode { cursor: crosshair !important; }
+#map.extend-mode .leaflet-interactive { cursor: pointer !important; }
+#map.draw-mode   { cursor: crosshair !important; }
+
+.tools-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px;
+    background: white;
+    border-radius: 4px;
+    box-shadow: 0 1px 5px rgba(0,0,0,0.4);
+    border: 1px solid #ccc;
+}
+.tools-panel button {
+    padding: 5px 8px;
+    font-size: 12px;
+    background: white;
+    color: #333;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    cursor: pointer;
+    text-align: left;
+    margin: 0;
+    min-width: 100px;
+}
+.tools-panel button:hover:not(:disabled) {
+    background: #eef4fb;
+    border-color: #0066cc;
+}
+.tools-panel button.active {
+    background: #0066cc;
+    color: white;
+    border-color: #0052a3;
+}
+.tools-panel button[data-tool="done"] {
+    background: #16a34a; color: white; border-color: #15803d;
+}
+.tools-panel button[data-tool="cancel"] {
+    background: #f4f4f4; color: #c00; border-color: #ccc;
+}
+.tools-group { display: flex; flex-direction: column; gap: 2px; }
+.tools-separator { height: 1px; background: #ddd; margin: 3px 2px; }
+
+/* Hide compare-only legend rows when compare panel is closed. */
+body:not(.compare-active) .compare-only { display: none; }
 
 .merge-queue {
     list-style: none;
@@ -261,3 +307,213 @@ button.mini.active:hover:not(:disabled) { background: #15803d; }
 .sw-dup { background: #ff8800; }
 .sw-novel-on { background: #16a34a; }
 .sw-novel-off { background: #16a34a; opacity: 0.35; border-top: 1px dashed #16a34a; height: 0; }
+.sw-wpt {
+    background: #4a90d9;
+    height: 10px;
+    width: 10px;
+    border-radius: 50%;
+    border: 2px solid #0066cc;
+    margin-right: 8px;
+}
+
+/* Base contents panel */
+#contentsList {
+    max-height: 60vh;
+    overflow-y: auto;
+    font-size: 12px;
+}
+.contents-group {
+    font-weight: 600;
+    color: #555;
+    padding: 6px 4px 3px;
+    font-size: 11px;
+    border-top: 1px solid #eee;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.contents-group:first-child { border-top: none; }
+.contents-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border-radius: 3px;
+    cursor: pointer;
+    margin-bottom: 1px;
+}
+.contents-item:hover { background: #eef4fb; }
+.contents-item .cn-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.contents-item .cn-meta {
+    color: #888;
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    flex-shrink: 0;
+}
+.contents-item button {
+    padding: 0 6px;
+    font-size: 14px;
+    background: transparent;
+    color: #c00;
+    border: none;
+    margin: 0;
+    line-height: 1;
+}
+.contents-item button:hover:not(:disabled) { background: #fee; }
+
+/* ---------- Dark mode (matches OS preference) ---------- */
+@media (prefers-color-scheme: dark) {
+    body { background: #1a1a1a; color: #e0e0e0; }
+    #sidebar { background: #111; border-right-color: #333; }
+    h1 { color: #f0f0f0; }
+    h2 { color: #ccc; }
+    section {
+        background: #262626;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.4);
+    }
+    .hint { color: #999; }
+    .info { color: #bbb; }
+    label { color: #ddd; }
+
+    input[type="number"],
+    input[type="text"],
+    input[type="file"],
+    select {
+        background: #1a1a1a;
+        color: #e0e0e0;
+        border: 1px solid #444;
+        color-scheme: dark;
+    }
+    input[type="file"]::-webkit-file-upload-button {
+        background: #444; color: #eee; border: none;
+    }
+
+    .dropzone { background: #202020; border-color: #444; }
+    .dropzone:hover { background: #2a2a2a; border-color: #666; }
+    .dropzone.dragover { background: #17334f; border-color: #0066cc; }
+    .dropzone-label { color: #999; }
+
+    .file-list { background: #1a1a1a; border-color: #333; }
+    .file-list:empty { display: none; }
+    .file-row { border-bottom-color: #2a2a2a; }
+    .file-row .file-name { color: #e0e0e0; }
+    .file-row .file-size { color: #888; }
+    .file-row .file-remove { color: #ff6b6b; }
+    .file-row .file-remove:hover { background: #3a1e1e; }
+
+    .relevance-badge { background: #2a2a2a; color: #999; }
+    .relevance-badge.relevant { background: #0f3d1e; color: #7ee0a1; }
+
+    .seg-group-header { color: #aaa; border-top-color: #333; }
+    .seg-item:hover { background: #1e3550; }
+    .seg-item.hovered { background: #244267; }
+    .seg-item .seg-name {
+        background: #1a1a1a;
+        color: #e0e0e0;
+        border-color: #444;
+    }
+    .seg-item .seg-name:focus {
+        outline: 2px solid #0066cc55;
+        border-color: #0066cc;
+    }
+    .seg-item .len { color: #999; }
+    .seg-item .seg-snap {
+        background: transparent;
+        color: #aaa;
+        border-color: #444;
+    }
+    .seg-item .seg-snap:hover {
+        background: #1e3550;
+        color: #7ec8f0;
+        border-color: #4a90d9;
+    }
+
+    #legend { background: #262626; color: #ccc; }
+    #mergeStatus { color: #7ee0a1; }
+    .unit-opt { color: #ccc; }
+
+    .merge-queue li { background: #1a1a1a; border-color: #333; color: #e0e0e0; }
+    .merge-item-num { color: #aaa; }
+    .merge-item-kind { color: #888; }
+    .merge-queue li button.mini { color: #ff6b6b; background: transparent; }
+    .merge-queue li button.mini:hover:not(:disabled) { background: #3a1e1e; }
+
+    button.mini { background: #444; }
+    button.mini:hover:not(:disabled) { background: #555; }
+    button.mini.active { background: #16a34a; }
+    button:disabled { background: #333; color: #666; }
+
+    /* Give supported base tiles a dark look. Satellite/imagery layers opt out
+       (no invert-in-dark class), so they stay naturally colored. */
+    .leaflet-tile-container .invert-in-dark {
+        filter: invert(0.92) hue-rotate(180deg) brightness(0.95) contrast(0.9) saturate(0.85);
+    }
+
+    /* Popups and tooltips get dark chrome too. */
+    .leaflet-popup-content-wrapper,
+    .leaflet-popup-tip {
+        background: #262626;
+        color: #e0e0e0;
+    }
+    .leaflet-tooltip {
+        background: #262626;
+        color: #e0e0e0;
+        border-color: #444;
+    }
+    .leaflet-tooltip-top:before { border-top-color: #262626; }
+    .leaflet-tooltip-bottom:before { border-bottom-color: #262626; }
+    .leaflet-tooltip-left:before { border-left-color: #262626; }
+    .leaflet-tooltip-right:before { border-right-color: #262626; }
+    .leaflet-container a.leaflet-popup-close-button { color: #ccc; }
+    .leaflet-control-attribution {
+        background: rgba(38, 38, 38, 0.85) !important;
+        color: #aaa !important;
+    }
+    .leaflet-control-attribution a { color: #7ec8f0 !important; }
+    .leaflet-bar a, .leaflet-bar a:hover {
+        background: #262626;
+        color: #eee;
+        border-color: #444;
+    }
+    .leaflet-bar a:hover { background: #333; }
+    .leaflet-control-layers {
+        background: #262626 !important;
+        color: #e0e0e0;
+        border-color: #444 !important;
+    }
+    .leaflet-control-layers-toggle {
+        background-color: #262626;
+    }
+    .leaflet-control-layers-separator { border-top-color: #444 !important; }
+    .tools-panel {
+        background: #262626;
+        border-color: #444;
+    }
+    .tools-panel button {
+        background: #262626;
+        color: #e0e0e0;
+        border-color: #444;
+    }
+    .tools-panel button:hover:not(:disabled) {
+        background: #1e3550;
+        border-color: #4a90d9;
+    }
+    .tools-panel button.active {
+        background: #0066cc;
+        color: white;
+        border-color: #0052a3;
+    }
+    .tools-panel button[data-tool="cancel"] {
+        background: #262626; color: #ff6b6b; border-color: #444;
+    }
+    .contents-group { color: #aaa; border-top-color: #333; }
+    .contents-item:hover { background: #1e3550; }
+    .contents-item .cn-meta { color: #888; }
+    .contents-item button { color: #ff6b6b; }
+    .contents-item button:hover:not(:disabled) { background: #3a1e1e; }
+    .tools-separator { background: #444; }
+}
