@@ -92,12 +92,17 @@ state.activeTool = null;
 state.activePanel = localStorage.getItem('gpxtools.activePanel') || null;
 state.waypointLayer = null;
 state.baseHistory = []; // undo stack of serialized base XML strings
+state.baseRedoStack = []; // redo stack, cleared on any new base mutation
 state.ghostPoint = null; // preview marker shown in split mode
 state.mergeSelection = []; // [{kind: 'baseTrack'|'rideSeg', ref, name}]
 state.extendTarget = null; // {trkEl, appendAt: 'start'|'end'}
 state.extendNewPoints = []; // [{lat, lon}]
 state.drawPoints = []; // [{lat, lon}]
+state.editTarget = null; // {trkEl, name} — the base track being edited
+state.editPoints = []; // [{lat, lon, raw?}] — full editable copy of the track's points
 state.previewLayer = null;
+state.toolHistory = []; // snapshots of the current tool's point buffer for in-tool undo
+state.toolRedoStack = []; // paired redo for the in-tool history
 
 // Back-compat getters — existing code paths reference these.
 Object.defineProperty(state, 'splitMode', { get() { return this.activeTool === 'split'; } });

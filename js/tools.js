@@ -286,33 +286,19 @@ function createBlankGpx() {
     return doc;
 }
 
-// Snapshot the current base XML so it can be restored later by Undo.
-// Called by every base-modifying operation.
+// Snapshot the current base XML so it can be restored later by Undo. Called
+// by every base-modifying operation. New mutations invalidate any pending
+// redo history — that's why we clear the redo stack here.
 function pushHistory() {
     if (!state.baseXmlDoc) return;
     state.baseHistory.push(new XMLSerializer().serializeToString(state.baseXmlDoc));
     if (state.baseHistory.length > UNDO_MAX) state.baseHistory.shift();
+    state.baseRedoStack = [];
     updateUndoButton();
 }
 
-function undo() {
-    // In-progress draw/extend: undo just the most recent point rather than
-    // popping the history stack.
-    if (state.activeTool === 'draw' && state.drawPoints.length) {
-        state.drawPoints.pop();
-        updateDrawPreview();
-        updateUndoButton();
-        return;
-    }
-    if (state.activeTool === 'extend' && state.extendNewPoints.length) {
-        state.extendNewPoints.pop();
-        updateExtendPreview();
-        updateUndoButton();
-        return;
-    }
-
-    if (!state.baseHistory.length) return;
-    const xml = state.baseHistory.pop();
+// Restore a snapshot popped by undo() or redo() into the live app state.
+function applyBaseSnapshot(xml) {
     const newDoc = parseGpx(xml);
     state.baseXmlDoc = newDoc;
     const entry = state.baseCache.get(state.activeBaseName);
@@ -335,25 +321,99 @@ function undo() {
     renderRideList();
     recompute();
     if (state.activePanel === 'contents') renderContentsPanel();
+}
+
+function undo() {
+    // If we're in the middle of a tool that snapshots its buffer, unwind that
+    // first. Only pops entries belonging to the current tool.
+    const top = state.toolHistory[state.toolHistory.length - 1];
+    if (top && top.tool === state.activeTool) {
+        // Save current buffer for redo before restoring.
+        const currentSnap =
+            top.tool === 'draw'   ? state.drawPoints.map(p => ({...p})) :
+            top.tool === 'extend' ? state.extendNewPoints.map(p => ({...p})) :
+            top.tool === 'edit'   ? state.editPoints.slice() : null;
+        state.toolRedoStack.push({tool: top.tool, snap: currentSnap});
+        state.toolHistory.pop();
+        if (top.tool === 'draw')   { state.drawPoints = top.snap;      updateDrawPreview(); }
+        if (top.tool === 'extend') { state.extendNewPoints = top.snap; updateExtendPreview(); }
+        if (top.tool === 'edit')   { state.editPoints = top.snap;      updateEditPreview(); }
+        updateUndoButton();
+        return;
+    }
+
+    if (!state.baseHistory.length) return;
+    // Save current XML for redo, then pop and restore.
+    state.baseRedoStack.push(new XMLSerializer().serializeToString(state.baseXmlDoc));
+    const xml = state.baseHistory.pop();
+    applyBaseSnapshot(xml);
     updateUndoButton();
     showStatus('Undid last change.');
 }
 
+function redo() {
+    // Prefer in-tool redo if it belongs to the current tool.
+    const topR = state.toolRedoStack[state.toolRedoStack.length - 1];
+    if (topR && topR.tool === state.activeTool) {
+        const currentSnap =
+            topR.tool === 'draw'   ? state.drawPoints.map(p => ({...p})) :
+            topR.tool === 'extend' ? state.extendNewPoints.map(p => ({...p})) :
+            topR.tool === 'edit'   ? state.editPoints.slice() : null;
+        state.toolHistory.push({tool: topR.tool, snap: currentSnap});
+        state.toolRedoStack.pop();
+        if (topR.tool === 'draw')   { state.drawPoints = topR.snap;      updateDrawPreview(); }
+        if (topR.tool === 'extend') { state.extendNewPoints = topR.snap; updateExtendPreview(); }
+        if (topR.tool === 'edit')   { state.editPoints = topR.snap;      updateEditPreview(); }
+        updateUndoButton();
+        return;
+    }
+    if (!state.baseRedoStack.length) return;
+    state.baseHistory.push(new XMLSerializer().serializeToString(state.baseXmlDoc));
+    const xml = state.baseRedoStack.pop();
+    applyBaseSnapshot(xml);
+    updateUndoButton();
+    showStatus('Redid last change.');
+}
+
 function updateUndoButton() {
-    const btn = document.querySelector('.tools-panel button[data-action="undo"]');
-    if (!btn) return;
-    const drawing   = state.activeTool === 'draw'   && state.drawPoints.length;
-    const extending = state.activeTool === 'extend' && state.extendNewPoints.length;
-    const canUndo = state.baseHistory.length || drawing || extending;
-    btn.disabled = !canUndo;
-    if (drawing) {
-        btn.textContent = `↶ Undo point (${state.drawPoints.length})`;
-    } else if (extending) {
-        btn.textContent = `↶ Undo point (${state.extendNewPoints.length})`;
-    } else if (state.baseHistory.length) {
-        btn.textContent = `↶ Undo (${state.baseHistory.length})`;
-    } else {
-        btn.textContent = '↶ Undo';
+    const undoBtn = document.querySelector('.tools-panel button[data-action="undo"]');
+    const redoBtn = document.querySelector('.tools-panel button[data-action="redo"]');
+    const top = state.toolHistory[state.toolHistory.length - 1];
+    const inTool = top && top.tool === state.activeTool;
+    const topR = state.toolRedoStack[state.toolRedoStack.length - 1];
+    const inToolRedo = topR && topR.tool === state.activeTool;
+
+    if (undoBtn) {
+        const canUndo = inTool || state.baseHistory.length > 0;
+        undoBtn.disabled = !canUndo;
+        if (inTool) {
+            let n = 0;
+            for (let i = state.toolHistory.length - 1; i >= 0; i--) {
+                if (state.toolHistory[i].tool === state.activeTool) n++;
+                else break;
+            }
+            undoBtn.textContent = `↶ Undo (${n})`;
+        } else if (state.baseHistory.length) {
+            undoBtn.textContent = `↶ Undo (${state.baseHistory.length})`;
+        } else {
+            undoBtn.textContent = '↶ Undo';
+        }
+    }
+    if (redoBtn) {
+        const canRedo = inToolRedo || state.baseRedoStack.length > 0;
+        redoBtn.disabled = !canRedo;
+        if (inToolRedo) {
+            let n = 0;
+            for (let i = state.toolRedoStack.length - 1; i >= 0; i--) {
+                if (state.toolRedoStack[i].tool === state.activeTool) n++;
+                else break;
+            }
+            redoBtn.textContent = `↷ Redo (${n})`;
+        } else if (state.baseRedoStack.length) {
+            redoBtn.textContent = `↷ Redo (${state.baseRedoStack.length})`;
+        } else {
+            redoBtn.textContent = '↷ Redo';
+        }
     }
 }
 
@@ -389,6 +449,10 @@ function setActiveTool(tool) {
     if (state.activeTool === 'merge')  { state.mergeSelection = []; }
     if (state.activeTool === 'extend') { state.extendTarget = null; state.extendNewPoints = []; }
     if (state.activeTool === 'draw')   { state.drawPoints = []; }
+    if (state.activeTool === 'edit')   { state.editTarget = null; state.editPoints = []; }
+    // Any in-tool history is discarded when the tool changes.
+    state.toolHistory = [];
+    state.toolRedoStack = [];
     clearPreview();
     hideGhostPoint();
 
@@ -402,12 +466,12 @@ function setActiveTool(tool) {
         });
         const doneBtn = panel.querySelector('button[data-tool="done"]');
         const cancelBtn = panel.querySelector('button[data-tool="cancel"]');
-        const show = tool === 'extend' || tool === 'draw' || tool === 'merge';
+        const show = tool === 'extend' || tool === 'draw' || tool === 'merge' || tool === 'edit';
         if (doneBtn) doneBtn.style.display = show ? '' : 'none';
         if (cancelBtn) cancelBtn.style.display = show ? '' : 'none';
     }
     const m = document.getElementById('map');
-    m.classList.remove('split-mode', 'merge-mode', 'extend-mode', 'draw-mode');
+    m.classList.remove('split-mode', 'merge-mode', 'extend-mode', 'draw-mode', 'edit-mode');
     if (tool) m.classList.add(`${tool}-mode`);
 
     // Show/hide the merge queue.
@@ -427,6 +491,10 @@ function setActiveTool(tool) {
             hint.innerHTML = '<div class="hint">Click on the map to add points. Click Done in the tools panel when finished.</div>';
         } else if (tool === 'split') {
             hint.innerHTML = '<div class="hint">Click on a base track or new segment to split it there.</div>';
+        } else if (tool === 'edit') {
+            hint.innerHTML = state.editTarget
+                ? `<div class="hint">Editing <b>${state.editTarget.name}</b>. Drag points, drag midpoint ghosts to insert, right-click a point to delete.</div>`
+                : '<div class="hint">Click a base track to edit it.</div>';
         } else {
             hint.innerHTML = '';
         }
@@ -437,6 +505,7 @@ function commitCurrentTool() {
     if (state.activeTool === 'merge') return finishMergeQueue();
     if (state.activeTool === 'extend') return finishExtend();
     if (state.activeTool === 'draw') return finishDraw();
+    if (state.activeTool === 'edit') return finishEdit();
 }
 
 function cancelCurrentTool() { setActiveTool(null); }
@@ -449,13 +518,49 @@ function clearPreview() {
     }
 }
 
-function draggablePointMarker(latlng, onDrag) {
+function draggablePointMarker(latlng, onDrag, onStart, onEnd) {
     const m = L.marker(latlng, {
         icon: L.divIcon({className: 'draw-point-marker', iconSize: [14, 14]}),
         draggable: true,
         keyboard: false,
     });
+    if (onStart) m.on('dragstart', onStart);
     m.on('drag', onDrag);
+    if (onEnd)   m.on('dragend',   onEnd);
+    return m;
+}
+
+// Snapshot the point buffer for the current tool so undo can restore it.
+// Called immediately BEFORE any modification (add/drag/insert/delete).
+function snapshotToolState() {
+    const t = state.activeTool;
+    if (t === 'draw')   state.toolHistory.push({tool: 'draw',   snap: state.drawPoints.map(p => ({...p}))});
+    else if (t === 'extend') state.toolHistory.push({tool: 'extend', snap: state.extendNewPoints.map(p => ({...p}))});
+    else if (t === 'edit')   state.toolHistory.push({tool: 'edit',   snap: state.editPoints.slice()});
+    // A fresh in-tool action invalidates any pending in-tool redo.
+    state.toolRedoStack = state.toolRedoStack.filter(x => x.tool !== t);
+    updateUndoButton();
+}
+
+// Half-opacity "ghost" handle at the midpoint of each segment. On dragstart
+// we insert a real point at that slot (via onStart), then let Leaflet's drag
+// keep control of the marker for the rest of the gesture — onDrag(latlng)
+// gets the live position (used to update the polyline) and onEnd(latlng) is
+// called once when the user releases (used to snap + re-render fresh ghosts).
+function midpointGhostMarker(latlng, {onStart, onDrag, onEnd}) {
+    const m = L.marker(latlng, {
+        icon: L.divIcon({className: 'draw-point-marker draw-point-ghost', iconSize: [12, 12]}),
+        draggable: true,
+        keyboard: false,
+    });
+    m.on('dragstart', () => {
+        // Promote visually — swap ghost class off so it looks like a real point.
+        const el = m.getElement();
+        if (el) el.classList.remove('draw-point-ghost');
+        if (onStart) onStart();
+    });
+    m.on('drag', (e) => { if (onDrag) onDrag(e.latlng); });
+    m.on('dragend', (e) => { if (onEnd) onEnd(e.target.getLatLng()); });
     return m;
 }
 
@@ -480,14 +585,42 @@ function updateExtendPreview() {
         layers.push(L.polyline(bridge, {color: '#22c55e', weight: 2, opacity: 0.5, dashArray: '2 4', interactive: false}));
     }
     state.extendNewPoints.forEach((p, i) => {
-        const m = draggablePointMarker([p.lat, p.lon], (e) => {
-            const snap = findSnap(e.latlng);
-            if (snap) { m.setLatLng(snap); state.extendNewPoints[i] = {lat: snap.lat, lon: snap.lng}; }
-            else state.extendNewPoints[i] = {lat: e.latlng.lat, lon: e.latlng.lng};
-            line.setLatLngs(state.extendNewPoints.map(pp => [pp.lat, pp.lon]));
-        });
+        const m = draggablePointMarker([p.lat, p.lon],
+            (e) => {
+                const snap = findSnap(e.latlng);
+                if (snap) { m.setLatLng(snap); state.extendNewPoints[i] = {lat: snap.lat, lon: snap.lng}; }
+                else state.extendNewPoints[i] = {lat: e.latlng.lat, lon: e.latlng.lng};
+                line.setLatLngs(state.extendNewPoints.map(pp => [pp.lat, pp.lon]));
+            },
+            () => snapshotToolState(),
+            () => { updateExtendPreview(); updateUndoButton(); }
+        );
         layers.push(m);
     });
+    // Midpoint ghost handles between each pair of adjacent new points.
+    for (let i = 0; i < state.extendNewPoints.length - 1; i++) {
+        const a = state.extendNewPoints[i], b = state.extendNewPoints[i + 1];
+        const mid = [(a.lat + b.lat) / 2, (a.lon + b.lon) / 2];
+        let insertedAt = null;
+        layers.push(midpointGhostMarker(mid, {
+            onStart: () => {
+                snapshotToolState();
+                insertedAt = i + 1;
+                state.extendNewPoints.splice(insertedAt, 0, {lat: mid[0], lon: mid[1]});
+            },
+            onDrag: (latlng) => {
+                state.extendNewPoints[insertedAt] = {lat: latlng.lat, lon: latlng.lng};
+                line.setLatLngs(state.extendNewPoints.map(pp => [pp.lat, pp.lon]));
+            },
+            onEnd: (latlng) => {
+                const snap = findSnap(latlng);
+                const p = snap ? {lat: snap.lat, lon: snap.lng} : {lat: latlng.lat, lon: latlng.lng};
+                state.extendNewPoints[insertedAt] = p;
+                updateExtendPreview();
+                updateUndoButton();
+            },
+        }));
+    }
     state.previewLayer = L.layerGroup(layers).addTo(map);
 }
 
@@ -500,15 +633,143 @@ function updateDrawPreview() {
     );
     const layers = [line];
     state.drawPoints.forEach((p, i) => {
-        const m = draggablePointMarker([p.lat, p.lon], (e) => {
-            const snap = findSnap(e.latlng);
-            if (snap) { m.setLatLng(snap); state.drawPoints[i] = {lat: snap.lat, lon: snap.lng}; }
-            else state.drawPoints[i] = {lat: e.latlng.lat, lon: e.latlng.lng};
-            line.setLatLngs(state.drawPoints.map(pp => [pp.lat, pp.lon]));
+        const m = draggablePointMarker([p.lat, p.lon],
+            (e) => {
+                const snap = findSnap(e.latlng);
+                if (snap) { m.setLatLng(snap); state.drawPoints[i] = {lat: snap.lat, lon: snap.lng}; }
+                else state.drawPoints[i] = {lat: e.latlng.lat, lon: e.latlng.lng};
+                line.setLatLngs(state.drawPoints.map(pp => [pp.lat, pp.lon]));
+            },
+            () => snapshotToolState(),
+            () => { updateDrawPreview(); updateUndoButton(); }
+        );
+        layers.push(m);
+    });
+    // Midpoint ghost handles between each pair of adjacent points. Dragging
+    // one inserts a real point at that slot.
+    for (let i = 0; i < state.drawPoints.length - 1; i++) {
+        const a = state.drawPoints[i], b = state.drawPoints[i + 1];
+        const mid = [(a.lat + b.lat) / 2, (a.lon + b.lon) / 2];
+        let insertedAt = null;
+        layers.push(midpointGhostMarker(mid, {
+            onStart: () => {
+                snapshotToolState();
+                insertedAt = i + 1;
+                state.drawPoints.splice(insertedAt, 0, {lat: mid[0], lon: mid[1]});
+            },
+            onDrag: (latlng) => {
+                state.drawPoints[insertedAt] = {lat: latlng.lat, lon: latlng.lng};
+                line.setLatLngs(state.drawPoints.map(pp => [pp.lat, pp.lon]));
+            },
+            onEnd: (latlng) => {
+                const snap = findSnap(latlng);
+                const p = snap ? {lat: snap.lat, lon: snap.lng} : {lat: latlng.lat, lon: latlng.lng};
+                state.drawPoints[insertedAt] = p;
+                updateDrawPreview();
+                updateUndoButton();
+            },
+        }));
+    }
+    state.previewLayer = L.layerGroup(layers).addTo(map);
+}
+
+// ---------- Edit-existing-track tool ----------
+function handleEditBaseClick(line) {
+    if (state.editTarget) return;
+    const pts = collectAllTrkpts(line._trkEl).map(p => ({
+        lat: parseFloat(p.getAttribute('lat')),
+        lon: parseFloat(p.getAttribute('lon')),
+        raw: p.cloneNode(true),
+    })).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lon));
+    if (pts.length < 2) return;
+    state.editTarget = {trkEl: line._trkEl, name: line._trkName};
+    state.editPoints = pts;
+    drawBase(); // hide the original polyline for this trk
+    updateEditPreview();
+    const hint = document.getElementById('mergeTracksHint');
+    if (hint) hint.innerHTML =
+        `<div class="hint">Editing <b>${line._trkName}</b>. Drag points, drag midpoint ghosts to insert, right-click a point to delete. Click Done when finished.</div>`;
+}
+
+function updateEditPreview() {
+    clearPreview();
+    if (!state.editTarget) return;
+    const line = L.polyline(
+        state.editPoints.map(p => [p.lat, p.lon]),
+        {color: '#e63946', weight: 5, opacity: 0.9, interactive: false}
+    );
+    const layers = [line];
+    state.editPoints.forEach((p, i) => {
+        const m = draggablePointMarker([p.lat, p.lon],
+            (e) => {
+                const snap = findSnap(e.latlng);
+                const target = snap ? {lat: snap.lat, lng: snap.lng} : e.latlng;
+                if (snap) m.setLatLng(snap);
+                state.editPoints[i] = {...state.editPoints[i], lat: target.lat, lon: target.lng};
+                line.setLatLngs(state.editPoints.map(pp => [pp.lat, pp.lon]));
+            },
+            () => snapshotToolState(),
+            () => { updateEditPreview(); updateUndoButton(); }
+        );
+        // Right-click / long-press: delete this point.
+        m.on('contextmenu', (e) => {
+            L.DomEvent.stop(e);
+            if (state.editPoints.length <= 2) return;
+            snapshotToolState();
+            state.editPoints.splice(i, 1);
+            updateEditPreview();
         });
         layers.push(m);
     });
+    for (let i = 0; i < state.editPoints.length - 1; i++) {
+        const a = state.editPoints[i], b = state.editPoints[i + 1];
+        const mid = [(a.lat + b.lat) / 2, (a.lon + b.lon) / 2];
+        let insertedAt = null;
+        layers.push(midpointGhostMarker(mid, {
+            onStart: () => {
+                snapshotToolState();
+                insertedAt = i + 1;
+                state.editPoints.splice(insertedAt, 0, {lat: mid[0], lon: mid[1]});
+            },
+            onDrag: (latlng) => {
+                state.editPoints[insertedAt] = {...state.editPoints[insertedAt], lat: latlng.lat, lon: latlng.lng};
+                line.setLatLngs(state.editPoints.map(pp => [pp.lat, pp.lon]));
+            },
+            onEnd: (latlng) => {
+                const snap = findSnap(latlng);
+                const p = snap ? {lat: snap.lat, lon: snap.lng} : {lat: latlng.lat, lon: latlng.lng};
+                state.editPoints[insertedAt] = {...state.editPoints[insertedAt], lat: p.lat, lon: p.lon};
+                updateEditPreview();
+                updateUndoButton();
+            },
+        }));
+    }
     state.previewLayer = L.layerGroup(layers).addTo(map);
+}
+
+function finishEdit() {
+    if (!state.editTarget || state.editPoints.length < 2) { setActiveTool(null); return; }
+    pushHistory();
+    const doc = state.baseXmlDoc;
+    const {trkEl, name} = state.editTarget;
+    // Wipe the trk's existing trksegs and replace with one containing the edited points.
+    for (const seg of [...trkEl.getElementsByTagName('trkseg')]) {
+        seg.parentNode.removeChild(seg);
+    }
+    const trkseg = doc.createElementNS(GPX_NS, 'trkseg');
+    for (const p of state.editPoints) {
+        const pt = doc.createElementNS(GPX_NS, 'trkpt');
+        pt.setAttribute('lat', p.lat.toFixed(7));
+        pt.setAttribute('lon', p.lon.toFixed(7));
+        // Preserve any children (ele, time, extensions) from the original point when available.
+        if (p.raw) {
+            for (const child of p.raw.children) pt.appendChild(child.cloneNode(true));
+        }
+        trkseg.appendChild(pt);
+    }
+    trkEl.appendChild(trkseg);
+    refreshBaseAfterEdit(`Edited "${name}".`);
+    setActiveTool(null);
 }
 
 function handleExtendBaseClick(line, latlng) {
@@ -630,12 +891,14 @@ function deleteWaypointEl(wptEl) {
 // Polyline click handlers use L.DomEvent.stop to prevent propagation here.
 map.on('click', (e) => {
     if (state.activeTool === 'extend' && state.extendTarget) {
+        snapshotToolState();
         const snap = findSnap(e.latlng);
         const p = snap || e.latlng;
         state.extendNewPoints.push({lat: p.lat, lon: p.lng});
         updateExtendPreview();
         updateUndoButton();
     } else if (state.activeTool === 'draw') {
+        snapshotToolState();
         const snap = findSnap(e.latlng);
         const p = snap || e.latlng;
         state.drawPoints.push({lat: p.lat, lon: p.lng});

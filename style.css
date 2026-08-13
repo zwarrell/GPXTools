@@ -113,6 +113,34 @@ h1 { font-size: 18px; margin: 0 0 8px 0; }
     gap: 12px;
     flex-wrap: wrap;
 }
+#settingsModal .shortcuts-row { align-items: flex-start; }
+#settingsModal .shortcuts-row .setting-value { display: block; }
+.shortcuts-table {
+    border-collapse: collapse;
+    font-size: 12px;
+    color: #444;
+}
+.shortcuts-table td {
+    padding: 3px 8px 3px 0;
+    vertical-align: top;
+}
+.shortcuts-table td:first-child { white-space: nowrap; }
+.shortcuts-table tr.shortcuts-section-hd td {
+    padding-top: 10px;
+    font-weight: 600;
+    color: #666;
+    border-bottom: 1px solid #eee;
+}
+kbd {
+    background: #f4f4f4;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    padding: 1px 6px;
+    font-family: ui-monospace, "Consolas", monospace;
+    font-size: 11px;
+    color: #333;
+    box-shadow: 0 1px 0 rgba(0,0,0,0.1);
+}
 h2 { font-size: 14px; margin: 0 0 6px 0; color: #333; }
 
 section {
@@ -182,6 +210,8 @@ button.mini.active:hover:not(:disabled) { background: #15803d; }
 #map.extend-mode { cursor: crosshair !important; }
 #map.extend-mode .leaflet-interactive { cursor: pointer !important; }
 #map.draw-mode   { cursor: crosshair !important; }
+#map.edit-mode   { cursor: pointer !important; }
+#map.edit-mode .leaflet-interactive { cursor: pointer !important; }
 
 .tools-panel {
     display: flex;
@@ -554,6 +584,12 @@ body.contents-active #legend { display: none; }
     cursor: grab;
 }
 .draw-point-marker:active { cursor: grabbing; }
+.draw-point-marker.draw-point-ghost {
+    opacity: 0.4;
+    box-shadow: none;
+    border-width: 1px;
+}
+.draw-point-marker.draw-point-ghost:hover { opacity: 0.9; }
 
 /* ---------- Dark mode (matches OS preference) ---------- */
 @media (prefers-color-scheme: dark) {
@@ -720,6 +756,9 @@ body.contents-active #legend { display: none; }
     #settingsModal .modal-close:hover { background: #333; color: #fff; }
     #settingsModal .setting-row { border-bottom-color: #333; }
     #settingsModal .setting-label { color: #ccc; }
+    .shortcuts-table { color: #ccc; }
+    .shortcuts-table tr.shortcuts-section-hd td { color: #aaa; border-bottom-color: #333; }
+    kbd { background: #333; border-color: #555; color: #eee; box-shadow: 0 1px 0 rgba(0,0,0,0.6); }
     .contents-item .cn-preset-btn {
         background: #333; color: #ccc; border-color: #444;
     }

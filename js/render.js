@@ -17,6 +17,10 @@ function drawBase() {
     const compareOn = state.activePanel === 'compare';
     const makeLine = (pts, name, ownerEl) => {
         if (pts.length < 2) { counts.skipped++; return; }
+        // Skip the track currently being edited — the edit preview shows it in
+        // its live-editable form, and drawing the original underneath would be
+        // confusing.
+        if (state.editTarget && ownerEl === state.editTarget.trkEl) return;
         counts.points += pts.length;
         const highlighted = ownerEl && isSelectedForMerge('baseTrack', ownerEl);
         // In compare mode, force blue so the legend matches. Outside compare
@@ -39,10 +43,19 @@ function drawBase() {
                 splitBaseTrackAt(line._trkEl, e.latlng);
             } else if (tool === 'extend') {
                 handleExtendBaseClick(line, e.latlng);
+            } else if (tool === 'edit') {
+                handleEditBaseClick(line);
             } else if (!tool) {
                 L.popup().setLatLng(e.latlng).setContent(trackStatsPopupHtml(line._trkEl, name)).openOn(map);
                 scrollContentsToItem('trk', line._trkEl);
             }
+        });
+        // Double-click enters Edit mode on this track directly.
+        line.on('dblclick', (e) => {
+            L.DomEvent.stop(e);
+            if (!line._trkEl || line._trkEl.localName !== 'trk') return;
+            if (state.activeTool !== 'edit') setActiveTool('edit');
+            handleEditBaseClick(line);
         });
         // Highlight on hover so the user knows which track is under the cursor.
         line.on('mouseover', () => {

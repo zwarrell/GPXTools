@@ -611,22 +611,24 @@ toolsControl.onAdd = () => {
         <button class="tools-collapse-btn" data-action="toggle-tools" title="Show/hide tools">🛠</button>
         <div class="tools-body">
             <div class="tools-group">
-                <button data-panel="contents" title="GPX Contents — list every trk, rte, and wpt in the active GPX">📁 Contents</button>
-                <button data-panel="compare"  title="Compare & merge — the ride-classification workflow">🚴 Compare</button>
+                <button data-panel="contents" title="GPX Contents — list every trk, rte, and wpt in the active GPX (C)">📁 Contents</button>
+                <button data-panel="compare"  title="Compare & merge — the ride-classification workflow (V)">🚴 Compare</button>
             </div>
             <div class="tools-separator"></div>
             <div class="tools-group">
                 <button data-tool="split"  title="Split — click a track to split it at the click point">✂ Split</button>
                 <button data-tool="merge"  title="Merge — click tracks in order to chain-join them">⇆ Merge</button>
                 <button data-tool="extend" title="Extend — click a track, then map points to extend it">➤ Extend</button>
+                <button data-tool="edit"   title="Edit — click a track to reshape it (drag points, drag midpoint ghosts, right-click to delete)">✏ Edit</button>
                 <button data-tool="draw"   title="Draw — click map points to draw a new track">✎ Draw</button>
                 <button data-tool="addwpt" title="Add waypoint — click a spot on the map to drop a waypoint">📍 Waypoint</button>
             </div>
             <div class="tools-separator"></div>
             <div class="tools-group">
-                <button data-action="undo"       title="Undo the last base change" disabled>↶ Undo</button>
-                <button data-action="export"     title="Download the current base as GPX">💾 Export</button>
-                <button data-action="fullscreen" title="Toggle fullscreen (same as F11)">⛶ Fullscreen</button>
+                <button data-action="undo"       title="Undo the last change (Ctrl+Z)" disabled>↶ Undo</button>
+                <button data-action="redo"       title="Redo the last undone change (Ctrl+Shift+Z)" disabled>↷ Redo</button>
+                <button data-action="export"     title="Download the current base as GPX (Ctrl+S)">💾 Export</button>
+                <button data-action="fullscreen" title="Toggle fullscreen (F)">⛶ Fullscreen</button>
             </div>
             <div class="tools-separator"></div>
             <button data-tool="done"   title="Finish current tool" style="display:none">✓ Done</button>
@@ -639,6 +641,7 @@ toolsControl.onAdd = () => {
         b.addEventListener('click', () => {
             if (b.dataset.action === 'toggle-tools') return div.classList.toggle('expanded');
             if (b.dataset.action === 'undo')       return undo();
+            if (b.dataset.action === 'redo')       return redo();
             if (b.dataset.action === 'export')     return exportBase();
             if (b.dataset.action === 'fullscreen') return toggleFullscreen();
             if (b.dataset.panel) return togglePanel(b.dataset.panel);
@@ -715,7 +718,10 @@ document.addEventListener('fullscreenchange', () => {
     if (closeBtn) closeBtn.addEventListener('click', closeModal);
     if (backdrop) backdrop.addEventListener('click', closeModal);
     window.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && modal && !modal.hasAttribute('hidden')) closeModal();
+        if (e.key === 'Escape' && modal && !modal.hasAttribute('hidden')) {
+            closeModal();
+            e.stopImmediatePropagation(); // don't also cancel an active tool
+        }
     });
 }
 
@@ -735,13 +741,105 @@ document.addEventListener('fullscreenchange', () => {
     });
     // Convenience: hitting Escape closes the drawer.
     window.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && document.body.classList.contains('sidebar-open')) closeDrawer();
+        if (e.key === 'Escape' && document.body.classList.contains('sidebar-open')) {
+            closeDrawer();
+            e.stopImmediatePropagation(); // don't also cancel an active tool
+        }
     });
     // Tap outside the sidebar (on the map) also closes it on mobile.
     document.getElementById('map').addEventListener('click', () => {
         if (window.innerWidth <= 768) closeDrawer();
     }, true);
 }
+
+// Dedicated capture-phase Escape handler — runs before any bubble-phase
+// listener (Leaflet markers, form controls, whatever) can swallow the event.
+// The settings modal and mobile drawer bubble handlers still get first shot
+// via their own stopImmediatePropagation, but if neither is open we cancel
+// the active tool immediately.
+document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const modal = document.getElementById('settingsModal');
+    if (modal && !modal.hasAttribute('hidden')) return;
+    if (document.body.classList.contains('sidebar-open')) return;
+    if (state.activeTool) {
+        if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+            e.target.blur();
+        }
+        cancelCurrentTool();
+        e.preventDefault();
+        e.stopPropagation();
+    }
+}, true);
+
+// ---------- Global hotkeys ----------
+window.addEventListener('keydown', (e) => {
+    // Escape always fires — even if focus is on a text input — so it can
+    // always cancel an active tool. The settings modal and mobile drawer
+    // handlers get first crack via stopImmediatePropagation() and short out
+    // us via the hidden checks below.
+    if (e.key === 'Escape') {
+        const modal = document.getElementById('settingsModal');
+        if (modal && !modal.hasAttribute('hidden')) return;
+        if (document.body.classList.contains('sidebar-open')) return;
+        // If a text input has focus, blur it so we don't leave the user typing.
+        if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+            e.target.blur();
+        }
+        if (state.activeTool) { e.preventDefault(); cancelCurrentTool(); }
+        return;
+    }
+
+    // Everything else: skip when focus is on an editable field so typing works.
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (e.altKey || e.metaKey) return;
+
+    if (e.ctrlKey) {
+        const k = e.key.toLowerCase();
+        if (k === 'z') {
+            e.preventDefault();
+            if (e.shiftKey) { if (typeof redo === 'function') redo(); }
+            else            { if (typeof undo === 'function') undo(); }
+            return;
+        }
+        if (k === 'y') { e.preventDefault(); if (typeof redo === 'function') redo(); return; }
+        if (k === 's') { e.preventDefault(); if (typeof exportBase === 'function') exportBase(); return; }
+        return;
+    }
+    if (e.key === 'Enter') {
+        if (state.activeTool && (state.activeTool === 'draw' || state.activeTool === 'extend' ||
+            state.activeTool === 'edit' || state.activeTool === 'merge')) {
+            e.preventDefault(); commitCurrentTool();
+        }
+        return;
+    }
+
+    // Bare single-letter shortcuts. Toggle the same tool off if pressed again.
+    const key = e.key.toLowerCase();
+    const toggleTool = t => setActiveTool(state.activeTool === t ? null : t);
+    switch (key) {
+        case 's': e.preventDefault(); toggleTool('split');  break;
+        case 'm': e.preventDefault(); toggleTool('merge');  break;
+        case 'x': e.preventDefault(); toggleTool('extend'); break;
+        case 'e': e.preventDefault(); toggleTool('edit');   break;
+        case 'd': e.preventDefault(); toggleTool('draw');   break;
+        case 'w': e.preventDefault(); toggleTool('addwpt'); break;
+        case 'c': e.preventDefault(); if (typeof togglePanel === 'function') togglePanel('contents'); break;
+        case 'v': e.preventDefault(); if (typeof togglePanel === 'function') togglePanel('compare');  break;
+        case 'f': e.preventDefault(); toggleFullscreen(); break;
+        case '?': {
+            e.preventDefault();
+            const modal = document.getElementById('settingsModal');
+            const settingsBtn = document.getElementById('settingsToggle');
+            if (modal) {
+                modal.removeAttribute('hidden');
+                if (settingsBtn) settingsBtn.classList.add('active');
+            }
+            break;
+        }
+    }
+});
 
 // Initial seed: HTML defaults are meters; if imperial, convert.
 if (state.units === 'imperial') {

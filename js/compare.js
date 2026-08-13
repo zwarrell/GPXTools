@@ -393,6 +393,37 @@ function renderMergedHistory() {
 }
 
 // ---------- Merge & Download ----------
+// Extend the included range on each end with adjacent duplicate points that
+// are within MERGE_BRIDGE_M meters of the segment's endpoint. This gives the
+// merged track a physical connection back to the base — without the bridge
+// point, the segment stops one duplicate-point short of the trail intersection
+// and looks disconnected.
+const MERGE_BRIDGE_M = 0.9144; // 3 feet in meters
+function bridgedIndices(seg, ridePoints) {
+    const idxs = seg.indices;
+    if (!idxs.length) return idxs;
+    const out = idxs.slice();
+    // Look at the immediately preceding point in the ride array.
+    const firstOrig = idxs[0];
+    if (firstOrig > 0) {
+        const a = ridePoints[firstOrig];
+        const b = ridePoints[firstOrig - 1];
+        if (a && b && haversineMeters(a.lat, a.lon, b.lat, b.lon) <= MERGE_BRIDGE_M) {
+            out.unshift(firstOrig - 1);
+        }
+    }
+    // And the immediately following point.
+    const lastOrig = idxs[idxs.length - 1];
+    if (lastOrig < ridePoints.length - 1) {
+        const a = ridePoints[lastOrig];
+        const b = ridePoints[lastOrig + 1];
+        if (a && b && haversineMeters(a.lat, a.lon, b.lat, b.lon) <= MERGE_BRIDGE_M) {
+            out.push(lastOrig + 1);
+        }
+    }
+    return out;
+}
+
 function buildMergedXml() {
     const outDoc = state.baseXmlDoc.cloneNode(true);
     const gpxRoot = outDoc.getElementsByTagName('gpx')[0];
@@ -415,7 +446,7 @@ function buildMergedXml() {
             nameEl.textContent = seg.name || defaultSegmentName(seg, localIdx);
             trk.appendChild(nameEl);
             const trkseg = outDoc.createElementNS(GPX_NS, 'trkseg');
-            for (const i of seg.indices) {
+            for (const i of bridgedIndices(seg, ridePoints)) {
                 trkseg.appendChild(outDoc.importNode(ridePoints[i].raw, true));
             }
             trk.appendChild(trkseg);
