@@ -271,15 +271,16 @@ function renameFeature(kind, idx) {
 async function ingestFiles(fileList, cache) {
     const added = [];
     for (const file of fileList) {
-        const text = await file.text();
         try {
+            const text = await file.text();
             const xmlDoc = parseGpx(text);
             const trksegs = extractTrksegs(xmlDoc);
             const points = flatten(trksegs);
             cache.set(file.name, {xmlDoc, trksegs, points, size: file.size});
             added.push(file.name);
         } catch (e) {
-            alert(`Failed to parse ${file.name}: ${e.message}`);
+            console.warn('GPX parse failed:', file.name, e);
+            showToast(`Couldn't load "${file.name}": ${e.message}`, 'error', 8000);
         }
     }
     return added;
@@ -608,31 +609,31 @@ toolsControl.onAdd = () => {
     const div = L.DomUtil.create('div', 'tools-panel leaflet-bar');
     div.id = 'toolsPanel';
     div.innerHTML = `
-        <button class="tools-collapse-btn" data-action="toggle-tools" title="Show/hide tools">🛠</button>
+        <button class="tools-collapse-btn" data-action="toggle-tools" title="Show/hide tools" aria-label="Show or hide tools">🛠</button>
         <div class="tools-body">
             <div class="tools-group">
-                <button data-panel="contents" title="GPX Contents — list every trk, rte, and wpt in the active GPX (C)">📁 Contents</button>
-                <button data-panel="compare"  title="Compare & merge — the ride-classification workflow (V)">🚴 Compare</button>
+                <button data-panel="contents" title="GPX Contents — list every trk, rte, and wpt in the active GPX (C)" aria-label="Toggle Contents panel (C)">📁 Contents</button>
+                <button data-panel="compare"  title="Compare & merge — the ride-classification workflow (V)" aria-label="Toggle Compare panel (V)">🚴 Compare</button>
             </div>
             <div class="tools-separator"></div>
             <div class="tools-group">
-                <button data-tool="split"  title="Split — click a track to split it at the click point">✂ Split</button>
-                <button data-tool="merge"  title="Merge — click tracks in order to chain-join them">⇆ Merge</button>
-                <button data-tool="extend" title="Extend — click a track, then map points to extend it">➤ Extend</button>
-                <button data-tool="edit"   title="Edit — click a track to reshape it (drag points, drag midpoint ghosts, right-click to delete)">✏ Edit</button>
-                <button data-tool="draw"   title="Draw — click map points to draw a new track">✎ Draw</button>
-                <button data-tool="addwpt" title="Add waypoint — click a spot on the map to drop a waypoint">📍 Waypoint</button>
+                <button data-tool="split"  title="Split — click a track to split it at the click point (S)" aria-label="Split tool (S)">✂ Split</button>
+                <button data-tool="merge"  title="Merge — click tracks in order to chain-join them (M)" aria-label="Merge tool (M)">⇆ Merge</button>
+                <button data-tool="extend" title="Extend — click a track, then map points to extend it (X)" aria-label="Extend tool (X)">➤ Extend</button>
+                <button data-tool="edit"   title="Edit — click a track to reshape it (drag points, drag midpoint ghosts, right-click to delete) (E)" aria-label="Edit tool (E)">✏ Edit</button>
+                <button data-tool="draw"   title="Draw — click map points to draw a new track (D)" aria-label="Draw tool (D)">✎ Draw</button>
+                <button data-tool="addwpt" title="Add waypoint — click a spot on the map to drop a waypoint (W)" aria-label="Add waypoint (W)">📍 Waypoint</button>
             </div>
             <div class="tools-separator"></div>
             <div class="tools-group">
-                <button data-action="undo"       title="Undo the last change (Ctrl+Z)" disabled>↶ Undo</button>
-                <button data-action="redo"       title="Redo the last undone change (Ctrl+Shift+Z)" disabled>↷ Redo</button>
-                <button data-action="export"     title="Download the current base as GPX (Ctrl+S)">💾 Export</button>
-                <button data-action="fullscreen" title="Toggle fullscreen (F)">⛶ Fullscreen</button>
+                <button data-action="undo"       title="Undo the last change (Ctrl+Z)" aria-label="Undo (Ctrl+Z)" disabled>↶ Undo</button>
+                <button data-action="redo"       title="Redo the last undone change (Ctrl+Shift+Z)" aria-label="Redo (Ctrl+Shift+Z)" disabled>↷ Redo</button>
+                <button data-action="export"     title="Download the current base as GPX (Ctrl+S)" aria-label="Export current GPX (Ctrl+S)">💾 Export</button>
+                <button data-action="fullscreen" title="Toggle fullscreen (F)" aria-label="Toggle fullscreen (F)">⛶ Fullscreen</button>
             </div>
             <div class="tools-separator"></div>
-            <button data-tool="done"   title="Finish current tool" style="display:none">✓ Done</button>
-            <button data-tool="cancel" title="Cancel current tool" style="display:none">✕ Cancel</button>
+            <button data-tool="done"   title="Finish current tool (Enter)" aria-label="Finish current tool (Enter)" style="display:none">✓ Done</button>
+            <button data-tool="cancel" title="Cancel current tool (Esc)" aria-label="Cancel current tool (Esc)" style="display:none">✕ Cancel</button>
         </div>
     `;
     L.DomEvent.disableClickPropagation(div);
@@ -751,6 +752,17 @@ document.addEventListener('fullscreenchange', () => {
         if (window.innerWidth <= 768) closeDrawer();
     }, true);
 }
+
+// Global safety net — any uncaught JS error or rejected promise surfaces as a
+// toast so users know something broke instead of the app going silently dead.
+window.addEventListener('error', (e) => {
+    console.error('Uncaught error:', e.error || e.message);
+    if (typeof showToast === 'function') showToast(`Error: ${e.message}`, 'error');
+});
+window.addEventListener('unhandledrejection', (e) => {
+    console.error('Unhandled rejection:', e.reason);
+    if (typeof showToast === 'function') showToast(`Error: ${e.reason?.message || e.reason}`, 'error');
+});
 
 // Dedicated capture-phase Escape handler — runs before any bubble-phase
 // listener (Leaflet markers, form controls, whatever) can swallow the event.

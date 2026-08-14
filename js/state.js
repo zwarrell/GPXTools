@@ -30,21 +30,43 @@ const baseLayers = {
     }),
 };
 
-// MVUM via esri-leaflet's dynamicMapLayer. The USFS ArcGIS service returns a
-// fresh export image per viewport. dynamicMapLayer's built-in moveend hook
-// can skip fast pans, leaving a stale image at old bounds; we force redraw
-// on every moveend/zoomend while the layer is on the map.
+// MVUM via esri-leaflet's dynamicMapLayer. USFS's ArcGIS service is a
+// server-side render — every viewport change costs a round trip and there's
+// no CDN in front of it, so we throttle re-requests (updateInterval 500ms
+// waits for the user to stop panning before firing another fetch) and show
+// a loading indicator on the tools panel while a request is in flight.
 const mvumLayer = L.esri.dynamicMapLayer({
     url: 'https://apps.fs.usda.gov/arcx/rest/services/EDW/EDW_MVUM_01/MapServer',
     opacity: 0.85,
-    updateInterval: 100,
+    updateInterval: 500,
     useCors: true,
     f: 'image',
     attribution: '© US Forest Service',
 });
+function setMvumLoading(on) {
+    let el = document.getElementById('mvumLoadingBadge');
+    if (on) {
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'mvumLoadingBadge';
+            el.textContent = 'Loading MVUM…';
+            document.body.appendChild(el);
+        }
+        el.style.display = 'block';
+    } else if (el) {
+        el.style.display = 'none';
+    }
+}
+mvumLayer.on('loading', () => setMvumLoading(true));
+mvumLayer.on('load',    () => setMvumLoading(false));
+mvumLayer.on('error',   (e) => {
+    setMvumLoading(false);
+    console.warn('MVUM load error:', e);
+    if (typeof showToast === 'function') showToast('MVUM tile load failed. Try panning to retry.', 'warn', 4000);
+});
 const mvumForceRedraw = () => mvumLayer.redraw && mvumLayer.redraw();
 mvumLayer.on('add',    () => { map.on('moveend zoomend', mvumForceRedraw); mvumForceRedraw(); });
-mvumLayer.on('remove', () => { map.off('moveend zoomend', mvumForceRedraw); });
+mvumLayer.on('remove', () => { map.off('moveend zoomend', mvumForceRedraw); setMvumLoading(false); });
 
 const overlayLayers = {
     "USFS MVUM (motor use)": mvumLayer,

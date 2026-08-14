@@ -591,6 +591,73 @@ body.contents-active #legend { display: none; }
 }
 .draw-point-marker.draw-point-ghost:hover { opacity: 0.9; }
 
+/* ---------- Toast notifications ---------- */
+#toastHost {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    z-index: 3000;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-width: min(380px, 90vw);
+    pointer-events: none;
+}
+#toastHost .toast {
+    background: white;
+    color: #222;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 10px 32px 10px 12px;
+    font-size: 13px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+    pointer-events: auto;
+    position: relative;
+    animation: toast-in 0.15s ease-out;
+}
+#toastHost .toast-error { border-left: 4px solid #c00; }
+#toastHost .toast-warn  { border-left: 4px solid #d97706; }
+#toastHost .toast-info  { border-left: 4px solid #0066cc; }
+#toastHost .toast-close {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    background: transparent;
+    color: #888;
+    border: none;
+    font-size: 16px;
+    line-height: 1;
+    padding: 4px 8px;
+    margin: 0;
+    cursor: pointer;
+}
+#toastHost .toast-close:hover { color: #333; }
+@keyframes toast-in { from { transform: translateX(20px); opacity: 0; } to { opacity: 1; } }
+
+/* MVUM loading badge (top-center, above the map) */
+#mvumLoadingBadge {
+    position: fixed;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1500;
+    background: rgba(255, 255, 255, 0.95);
+    color: #333;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    padding: 4px 12px;
+    font-size: 12px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+    display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+    #toastHost .toast { background: #262626; color: #eee; border-color: #444; }
+    #toastHost .toast-close { color: #aaa; }
+    #toastHost .toast-close:hover { color: #fff; }
+    #mvumLoadingBadge { background: rgba(38,38,38,0.95); color: #eee; border-color: #444; }
+}
+
 /* ---------- Dark mode (matches OS preference) ---------- */
 @media (prefers-color-scheme: dark) {
     body { background: #1a1a1a; color: #e0e0e0; }

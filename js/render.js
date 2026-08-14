@@ -304,6 +304,26 @@ function trackStatsPopupHtml(trkEl, name) {
     return rows.join('<br>');
 }
 
+// User-visible toast notification. Type: 'info' (default) | 'error' | 'warn'.
+function showToast(msg, type = 'info', durationMs = 5000) {
+    let host = document.getElementById('toastHost');
+    if (!host) {
+        host = document.createElement('div');
+        host.id = 'toastHost';
+        document.body.appendChild(host);
+    }
+    const el = document.createElement('div');
+    el.className = `toast toast-${type}`;
+    el.textContent = msg;
+    const close = document.createElement('button');
+    close.className = 'toast-close';
+    close.textContent = '×';
+    close.addEventListener('click', () => el.remove());
+    el.appendChild(close);
+    host.appendChild(el);
+    if (durationMs > 0) setTimeout(() => el.remove(), durationMs);
+}
+
 function showStatus(msg) {
     const el = document.getElementById('mergeStatus');
     el.textContent = msg;

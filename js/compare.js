@@ -77,49 +77,73 @@ function classifyOneRide(ridePoints, threshold, minLen) {
     return merged;
 }
 
+// Synchronous version — used when we only have small data.
 function classifyAll() {
+    const {prev} = _classifyPrepare();
+    let nextId = 0;
     const threshold = readInputMeters('threshold');
     const minLen = readInputMeters('minLen');
-    // Cap cell size so large thresholds don't inflate per-cell point counts.
-    // anyPointWithin() handles multi-cell sweeps automatically.
-    const cellSpanM = Math.min(2 * threshold, 60);
-    const cellDeg = Math.max(cellSpanM / 111000, 0.00005);
-    state.baseGrid = state.basePoints.length
-        ? buildGrid(state.basePoints, cellDeg)
-        : null;
-
-    // Preserve per-segment state across recomputes (keyed by first index in a ride).
-    const prev = new Map();
-    for (const s of state.segments) {
-        prev.set(`${s.rideName}:${s.indices[0]}:${s.novel}`, {
-            included: s.included,
-            name: s.name,
-        });
-    }
-
-    state.segments = [];
-    let nextId = 0;
     for (const rideName of state.activeRideNames) {
         const ride = state.rideCache.get(rideName);
         if (!ride) continue;
-        const runs = classifyOneRide(ride.points, threshold, minLen);
-        for (const r of runs) {
-            const key = `${rideName}:${r.indices[0]}:${r.novel}`;
-            const p = prev.get(key);
-            state.segments.push({
-                id: nextId++,
-                rideName,
-                indices: r.indices,
-                novel: r.novel,
-                trksegIdx: r.trksegIdx,
-                included: p ? p.included : r.novel,
-                distance: r.distance,
-                name: p?.name ?? null,
-                layer: null,
-            });
-        }
+        nextId = _appendClassifiedRide(rideName, ride, threshold, minLen, prev, nextId);
     }
     applyUserSplits(prev);
+}
+
+// Async version — used when large data would freeze the UI. Yields between
+// rides so paints, clicks, and pans stay responsive. Returns a promise that
+// resolves when all active rides are classified.
+async function classifyAllAsync(progressCb) {
+    const {prev} = _classifyPrepare();
+    let nextId = 0;
+    const threshold = readInputMeters('threshold');
+    const minLen = readInputMeters('minLen');
+    const rides = [...state.activeRideNames];
+    for (let i = 0; i < rides.length; i++) {
+        const rideName = rides[i];
+        const ride = state.rideCache.get(rideName);
+        if (!ride) continue;
+        if (progressCb) progressCb(i, rides.length, rideName);
+        nextId = _appendClassifiedRide(rideName, ride, threshold, minLen, prev, nextId);
+        // Yield to the browser between rides.
+        await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    applyUserSplits(prev);
+    if (progressCb) progressCb(rides.length, rides.length, null);
+}
+
+function _classifyPrepare() {
+    const threshold = readInputMeters('threshold');
+    const cellSpanM = Math.min(2 * threshold, 60);
+    const cellDeg = Math.max(cellSpanM / 111000, 0.00005);
+    state.baseGrid = state.basePoints.length ? buildGrid(state.basePoints, cellDeg) : null;
+    const prev = new Map();
+    for (const s of state.segments) {
+        prev.set(`${s.rideName}:${s.indices[0]}:${s.novel}`, {included: s.included, name: s.name});
+    }
+    state.segments = [];
+    return {prev};
+}
+
+function _appendClassifiedRide(rideName, ride, threshold, minLen, prev, nextId) {
+    const runs = classifyOneRide(ride.points, threshold, minLen);
+    for (const r of runs) {
+        const key = `${rideName}:${r.indices[0]}:${r.novel}`;
+        const p = prev.get(key);
+        state.segments.push({
+            id: nextId++,
+            rideName,
+            indices: r.indices,
+            novel: r.novel,
+            trksegIdx: r.trksegIdx,
+            included: p ? p.included : r.novel,
+            distance: r.distance,
+            name: p?.name ?? null,
+            layer: null,
+        });
+    }
+    return nextId;
 }
 
 // Re-apply user-forced splits after classification so they survive recomputes.
@@ -532,9 +556,47 @@ function exportBase() {
     showStatus(`Exported "${state.activeBaseName}".`);
 }
 
+// Heuristic: if the workload is small (fast enough to keep the UI responsive
+// synchronously), stay sync. Otherwise, run classification async so the map
+// keeps painting and the user can still interact.
+const RECOMPUTE_ASYNC_THRESHOLD = 50_000; // total points across active rides
+
+function _shouldRecomputeAsync() {
+    let total = 0;
+    for (const name of state.activeRideNames) {
+        const r = state.rideCache.get(name);
+        if (r) total += r.points.length;
+        if (total > RECOMPUTE_ASYNC_THRESHOLD) return true;
+    }
+    return false;
+}
+
 function recompute() {
-    classifyAll();
-    drawRide();
-    renderSegList();
-    updateStats();
+    if (!_shouldRecomputeAsync()) {
+        classifyAll();
+        drawRide();
+        renderSegList();
+        updateStats();
+        return;
+    }
+    // Big workload — run async, show progress. Don't stack multiple runs.
+    if (recompute._running) { recompute._pending = true; return; }
+    recompute._running = true;
+    if (typeof showStatus === 'function') showStatus('Classifying rides…');
+    classifyAllAsync((done, total) => {
+        if (total > 0 && done < total && typeof showStatus === 'function') {
+            showStatus(`Classifying rides… ${done}/${total}`);
+        }
+    }).then(() => {
+        drawRide();
+        renderSegList();
+        updateStats();
+        if (typeof showStatus === 'function') showStatus('Ready.');
+    }).catch(err => {
+        console.error('classifyAllAsync failed:', err);
+        if (typeof showToast === 'function') showToast(`Recompute failed: ${err.message}`, 'error');
+    }).finally(() => {
+        recompute._running = false;
+        if (recompute._pending) { recompute._pending = false; recompute(); }
+    });
 }
