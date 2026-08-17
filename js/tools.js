@@ -849,6 +849,48 @@ function finishDraw() {
     setActiveTool(null);
 }
 
+// Parse a coordinate string. Accepts decimal-degree formats:
+//   "40.7128, -74.0060"    "40.7128 -74.0060"    "40.7128,-74.0060"
+//   "40.7128°N, 74.0060°W" (hemisphere suffix flips sign)
+// Returns {lat, lon} or null.
+function parseLatLon(input) {
+    if (!input) return null;
+    const s = input.trim();
+    if (!s) return null;
+    // Grab all signed numeric tokens.
+    const nums = s.match(/-?\d+(?:\.\d+)?/g);
+    if (!nums || nums.length < 2) return null;
+    let lat = parseFloat(nums[0]);
+    let lon = parseFloat(nums[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    // Apply N/S/E/W hemisphere hints if present.
+    const upper = s.toUpperCase();
+    if (/\bS\b/.test(upper) && lat > 0) lat = -lat;
+    if (/\bN\b/.test(upper) && lat < 0) lat = -lat;
+    if (/\bW\b/.test(upper) && lon > 0) lon = -lon;
+    if (/\bE\b/.test(upper) && lon < 0) lon = -lon;
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+    return {lat, lon};
+}
+
+// Prompt-driven waypoint entry: ask for coordinates, then name/desc, then
+// drop the waypoint and pan the map to it.
+function addWaypointByCoords() {
+    const raw = prompt('Enter waypoint coordinates (lat, lon):\n\nExamples:\n  40.7128, -74.0060\n  40.7128 -74.0060', '');
+    if (raw === null) return;
+    const parsed = parseLatLon(raw);
+    if (!parsed) {
+        if (typeof showToast === 'function') showToast('Could not parse coordinates. Use decimal degrees, e.g. "40.7128, -74.0060".', 'error');
+        return;
+    }
+    const name = prompt('Waypoint name:', '');
+    if (name === null) return;
+    const desc = prompt('Description (optional):', '');
+    if (desc === null) return;
+    addWaypoint(parsed.lat, parsed.lon, name.trim() || 'Waypoint', desc.trim());
+    map.setView([parsed.lat, parsed.lon], Math.max(map.getZoom(), 15));
+}
+
 function addWaypoint(lat, lon, name, desc) {
     if (!state.baseXmlDoc) createBlankGpx();
     pushHistory();

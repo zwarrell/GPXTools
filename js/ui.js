@@ -623,6 +623,7 @@ toolsControl.onAdd = () => {
                 <button data-tool="edit"   title="Edit — click a track to reshape it (drag points, drag midpoint ghosts, right-click to delete) (E)" aria-label="Edit tool (E)">✏ Edit</button>
                 <button data-tool="draw"   title="Draw — click map points to draw a new track (D)" aria-label="Draw tool (D)">✎ Draw</button>
                 <button data-tool="addwpt" title="Add waypoint — click a spot on the map to drop a waypoint (W)" aria-label="Add waypoint (W)">📍 Waypoint</button>
+                <button data-action="wptcoords" title="Add waypoint by coordinates — enter a lat/lon pair" aria-label="Add waypoint by coordinates">🧭 Wpt by coords</button>
             </div>
             <div class="tools-separator"></div>
             <div class="tools-group">
@@ -645,6 +646,7 @@ toolsControl.onAdd = () => {
             if (b.dataset.action === 'redo')       return redo();
             if (b.dataset.action === 'export')     return exportBase();
             if (b.dataset.action === 'fullscreen') return toggleFullscreen();
+            if (b.dataset.action === 'wptcoords')  return addWaypointByCoords();
             if (b.dataset.panel) return togglePanel(b.dataset.panel);
             const t = b.dataset.tool;
             if (t === 'done')   return commitCurrentTool();

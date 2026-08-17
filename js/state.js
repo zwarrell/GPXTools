@@ -3,7 +3,11 @@
 // object plus small unit-formatting helpers that depend on state.units.
 
 // ---------- Map ----------
-const map = L.map('map').setView([40.76, -112.78], 12);
+// maxZoom on the map is set explicitly so it isn't clamped to whichever
+// tile layer happens to be added first. Individual tile layers cap their
+// own maxNativeZoom to what the server actually serves; past that, Leaflet
+// upscales the last-available tile.
+const map = L.map('map', {maxZoom: 22}).setView([40.76, -112.78], 12);
 
 
 // Base polylines live in a pane above the default overlay pane so their
@@ -11,23 +15,53 @@ const map = L.map('map').setView([40.76, -112.78], 12);
 map.createPane('basePane');
 map.getPane('basePane').style.zIndex = 450;
 
+// Highest zoom level any layer allows. Tile layers set maxNativeZoom to their
+// server's actual cap so Leaflet upscales the last-available tile past that
+// (pixelated, but zoom-in still works). Esri imagery actually serves tiles up
+// to z19 worldwide and z22–23 in metro areas.
+const MAX_MAP_ZOOM = 22;
+
+// Esri World Imagery — free, no API key, high-res satellite. Attribution is
+// required per Esri's terms of use.
+const esriImagery = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: MAX_MAP_ZOOM,
+        maxNativeZoom: 19,
+        attribution: 'Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+    });
+
+// USGS pre-composed hybrid: satellite imagery underneath, USGS topo (roads,
+// trails, place names, contour markers, park/forest boundaries, etc.) baked
+// in on top. A single tile service, not two stacked layers.
+const usgsImageryTopo = L.tileLayer(
+    'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryTopo/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: MAX_MAP_ZOOM,
+        maxNativeZoom: 16,
+        attribution: 'Tiles courtesy of the U.S. Geological Survey',
+    });
+
 const baseLayers = {
     "OpenStreetMap": L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
+        maxZoom: MAX_MAP_ZOOM,
+        maxNativeZoom: 19,
         attribution: '© OpenStreetMap',
         className: 'invert-in-dark',
     }),
     "USGS Topo": L.tileLayer('https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}', {
-        maxZoom: 16,
+        maxZoom: MAX_MAP_ZOOM,
+        maxNativeZoom: 16,
         attribution: 'Tiles courtesy of the U.S. Geological Survey',
         className: 'invert-in-dark',
     }),
     "OpenTopoMap": L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
-        maxZoom: 17,
+        maxZoom: MAX_MAP_ZOOM,
+        maxNativeZoom: 17,
         subdomains: 'abc',
         attribution: '© OpenStreetMap · SRTM · OpenTopoMap (CC-BY-SA)',
         className: 'invert-in-dark',
     }),
+    "Satellite": esriImagery,
+    "Satellite + USGS Topo": usgsImageryTopo,
 };
 
 // MVUM via esri-leaflet's dynamicMapLayer. USFS's ArcGIS service is a
