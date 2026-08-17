@@ -143,11 +143,12 @@ function drawWaypoints() {
         const cmt  = directChildText(wpt, 'cmt');
         const ele  = directChildText(wpt, 'ele');
         const sym  = directChildText(wpt, 'sym');
+        const color = wptColor(wpt) || '#0066cc';
         const marker = L.circleMarker([lat, lon], {
             radius: 6,
-            color: '#0066cc',
-            fillColor: '#4a90d9',
-            fillOpacity: 0.9,
+            color: color,
+            fillColor: color,
+            fillOpacity: 0.85,
             weight: 2,
             pane: 'basePane',
         });
@@ -176,12 +177,21 @@ function drawWaypoints() {
     }
 }
 
-function fitBoundsBase() {
-    if (!state.baseLayer) return;
-    const bounds = L.latLngBounds([]);
-    state.baseLayer.eachLayer(l => {
+// Extend a bounds by every child in a layer group — polylines contribute their
+// getBounds, markers contribute their single latlng. Handles the waypoint-only
+// GPX case where there are no polylines to give a valid bounds.
+function extendBoundsFromGroup(bounds, group) {
+    if (!group) return;
+    group.eachLayer(l => {
         if (typeof l.getBounds === 'function') bounds.extend(l.getBounds());
+        else if (typeof l.getLatLng === 'function') bounds.extend(l.getLatLng());
     });
+}
+
+function fitBoundsBase() {
+    const bounds = L.latLngBounds([]);
+    extendBoundsFromGroup(bounds, state.baseLayer);
+    extendBoundsFromGroup(bounds, state.waypointLayer);
     if (bounds.isValid()) map.fitBounds(bounds.pad(0.05));
 }
 
@@ -246,11 +256,9 @@ function snapToSegment(id) {
 
 function fitBoundsAll() {
     const bounds = L.latLngBounds([]);
-    const extendFromGroup = g => g && g.eachLayer(l => {
-        if (typeof l.getBounds === 'function') bounds.extend(l.getBounds());
-    });
-    extendFromGroup(state.baseLayer);
-    extendFromGroup(state.rideLayerGroup);
+    extendBoundsFromGroup(bounds, state.baseLayer);
+    extendBoundsFromGroup(bounds, state.waypointLayer);
+    extendBoundsFromGroup(bounds, state.rideLayerGroup);
     if (bounds.isValid()) map.fitBounds(bounds.pad(0.05));
 }
 

@@ -873,8 +873,7 @@ function parseLatLon(input) {
     return {lat, lon};
 }
 
-// Prompt-driven waypoint entry: ask for coordinates, then name/desc, then
-// drop the waypoint and pan the map to it.
+// Prompt for coordinates, then open the waypoint modal pre-filled with them.
 function addWaypointByCoords() {
     const raw = prompt('Enter waypoint coordinates (lat, lon):\n\nExamples:\n  40.7128, -74.0060\n  40.7128 -74.0060', '');
     if (raw === null) return;
@@ -883,42 +882,190 @@ function addWaypointByCoords() {
         if (typeof showToast === 'function') showToast('Could not parse coordinates. Use decimal degrees, e.g. "40.7128, -74.0060".', 'error');
         return;
     }
-    const name = prompt('Waypoint name:', '');
-    if (name === null) return;
-    const desc = prompt('Description (optional):', '');
-    if (desc === null) return;
-    addWaypoint(parsed.lat, parsed.lon, name.trim() || 'Waypoint', desc.trim());
-    map.setView([parsed.lat, parsed.lon], Math.max(map.getZoom(), 15));
+    showWaypointModal({
+        title: 'Add waypoint',
+        lat: parsed.lat, lon: parsed.lon,
+        onSave: fields => {
+            addWaypoint(fields);
+            map.setView([fields.lat, fields.lon], Math.max(map.getZoom(), 15));
+        },
+    });
 }
 
-function addWaypoint(lat, lon, name, desc) {
+// Create a new waypoint. Accepts a fields object from the modal, or a legacy
+// (lat, lon, name, desc) call for callers that don't have a color/sym.
+function addWaypoint(fieldsOrLat, lon, name, desc) {
+    const fields = typeof fieldsOrLat === 'object'
+        ? fieldsOrLat
+        : {lat: fieldsOrLat, lon, name, desc};
     if (!state.baseXmlDoc) createBlankGpx();
     pushHistory();
     const doc = state.baseXmlDoc;
     const wpt = doc.createElementNS(GPX_NS, 'wpt');
-    wpt.setAttribute('lat', lat.toFixed(7));
-    wpt.setAttribute('lon', lon.toFixed(7));
-    setDirectChild(wpt, 'name', name || 'Waypoint');
-    if (desc) setDirectChild(wpt, 'desc', desc);
+    wpt.setAttribute('lat', (+fields.lat).toFixed(7));
+    wpt.setAttribute('lon', (+fields.lon).toFixed(7));
+    setDirectChild(wpt, 'name', (fields.name || '').trim() || 'Waypoint');
+    if (fields.desc) setDirectChild(wpt, 'desc', fields.desc);
+    if (fields.cmt)  setDirectChild(wpt, 'cmt',  fields.cmt);
+    if (fields.sym)  setDirectChild(wpt, 'sym',  fields.sym);
     // GPX schema puts wpts before rte/trk. Insert before the first one if any.
     const gpxRoot = doc.getElementsByTagName('gpx')[0];
     const firstAnchor = doc.querySelector('rte, trk');
     if (firstAnchor) gpxRoot.insertBefore(wpt, firstAnchor);
     else gpxRoot.appendChild(wpt);
-    refreshBaseAfterEdit(`Added waypoint "${name || 'Waypoint'}".`);
+    if (fields.color) setWptColor(wpt, fields.color);
+    refreshBaseAfterEdit(`Added waypoint "${(fields.name || 'Waypoint').trim()}".`);
 }
 
 function editWaypoint(wptEl) {
-    const currentName = directChildText(wptEl, 'name');
-    const currentDesc = directChildText(wptEl, 'desc');
-    const newName = prompt('Waypoint name:', currentName);
-    if (newName === null) return;
-    const newDesc = prompt('Description (leave blank to remove):', currentDesc);
-    if (newDesc === null) return;
-    pushHistory();
-    setDirectChild(wptEl, 'name', newName.trim() || 'Waypoint');
-    setDirectChild(wptEl, 'desc', newDesc);
-    refreshBaseAfterEdit(`Edited waypoint.`);
+    showWaypointModal({
+        title: 'Edit waypoint',
+        name:  directChildText(wptEl, 'name'),
+        desc:  directChildText(wptEl, 'desc'),
+        cmt:   directChildText(wptEl, 'cmt'),
+        sym:   directChildText(wptEl, 'sym'),
+        color: wptColor(wptEl) || '#0066cc',
+        lat:   parseFloat(wptEl.getAttribute('lat')),
+        lon:   parseFloat(wptEl.getAttribute('lon')),
+        onSave: fields => {
+            pushHistory();
+            setDirectChild(wptEl, 'name', (fields.name || '').trim() || 'Waypoint');
+            setDirectChild(wptEl, 'desc', fields.desc);
+            setDirectChild(wptEl, 'cmt',  fields.cmt);
+            setDirectChild(wptEl, 'sym',  fields.sym);
+            setWptColor(wptEl, fields.color);
+            if (Number.isFinite(fields.lat) && Number.isFinite(fields.lon)) {
+                wptEl.setAttribute('lat', fields.lat.toFixed(7));
+                wptEl.setAttribute('lon', fields.lon.toFixed(7));
+            }
+            refreshBaseAfterEdit('Edited waypoint.');
+        },
+    });
+}
+
+// Build and open the waypoint modal. Fields default to sensible empty values;
+// onSave receives {name, desc, cmt, sym, color, lat, lon}. Cancel/close do
+// nothing.
+function showWaypointModal({title, name = '', desc = '', cmt = '', sym = '',
+                             color = '#0066cc', lat, lon, onSave}) {
+    document.querySelectorAll('.wpt-modal').forEach(m => m.remove());
+    // Shared symbol datalist — mirrors common Garmin waypoint symbols.
+    if (!document.getElementById('wptSymbolPresets')) {
+        const dl = document.createElement('datalist');
+        dl.id = 'wptSymbolPresets';
+        const syms = ['Flag, Green', 'Flag, Blue', 'Flag, Red',
+                      'Pin, Green', 'Pin, Blue', 'Pin, Red',
+                      'Waypoint', 'Trailhead', 'Summit',
+                      'Circle, Green', 'Circle, Blue', 'Circle, Red',
+                      'Diamond, Green', 'Diamond, Blue', 'Diamond, Red',
+                      'Star', 'Camp', 'Parking Area', 'Restaurant',
+                      'Restroom', 'Gas Station', 'Water Source',
+                      'Photo', 'Danger Area', 'Scenic Area'];
+        for (const s of syms) {
+            const opt = document.createElement('option');
+            opt.value = s;
+            dl.appendChild(opt);
+        }
+        document.body.appendChild(dl);
+    }
+    const modal = document.createElement('div');
+    modal.className = 'wpt-modal';
+    modal.innerHTML = `
+        <div class="modal-backdrop"></div>
+        <div class="modal-box" role="dialog" aria-labelledby="wpt-modal-title">
+            <div class="modal-header">
+                <h2 id="wpt-modal-title">${escapeHtml(title)}</h2>
+                <button class="modal-close" aria-label="Close">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="wpt-field"><label for="wm-name">Name</label>
+                    <input type="text" id="wm-name" value="${escapeHtml(name)}"></div>
+                <div class="wpt-field"><label for="wm-sym">Symbol</label>
+                    <input type="text" id="wm-sym" list="wptSymbolPresets"
+                           placeholder="e.g. Flag, Pin, Trailhead" value="${escapeHtml(sym)}">
+                    <span class="wpt-hint">Garmin <code>&lt;sym&gt;</code> — icon name used by BaseCamp, Connect, etc.</span>
+                </div>
+                <div class="wpt-field"><label for="wm-color">Color</label>
+                    <div class="wpt-color-row">
+                        <input type="color" id="wm-color" value="${color}" list="colorPresets">
+                        <button type="button" class="mini" id="wm-preset-btn" title="Choose from preset palette">▾ Presets</button>
+                    </div>
+                </div>
+                <div class="wpt-field wpt-field-latlon">
+                    <label for="wm-lat">Coordinates</label>
+                    <div class="wpt-latlon-row">
+                        <input type="number" id="wm-lat" step="0.0000001" placeholder="lat" value="${Number.isFinite(lat) ? lat : ''}">
+                        <input type="number" id="wm-lon" step="0.0000001" placeholder="lon" value="${Number.isFinite(lon) ? lon : ''}">
+                    </div>
+                </div>
+                <div class="wpt-field"><label for="wm-desc">Description</label>
+                    <textarea id="wm-desc" rows="3">${escapeHtml(desc)}</textarea>
+                </div>
+                <div class="wpt-field"><label for="wm-cmt">Comment</label>
+                    <textarea id="wm-cmt" rows="2">${escapeHtml(cmt)}</textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="wpt-btn-cancel">Cancel</button>
+                <button type="button" class="wpt-btn-save">Save</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+
+    const $ = sel => modal.querySelector(sel);
+    const nameEl = $('#wm-name'), symEl = $('#wm-sym'), colorEl = $('#wm-color');
+    const latEl  = $('#wm-lat'),  lonEl = $('#wm-lon');
+    const descEl = $('#wm-desc'), cmtEl = $('#wm-cmt');
+
+    let closed = false;
+    const close = () => {
+        if (closed) return;
+        closed = true;
+        modal.remove();
+        document.removeEventListener('keydown', keyHandler, true);
+    };
+    const save = () => {
+        const parsedLat = parseFloat(latEl.value);
+        const parsedLon = parseFloat(lonEl.value);
+        if (!Number.isFinite(parsedLat) || !Number.isFinite(parsedLon) ||
+            parsedLat < -90 || parsedLat > 90 || parsedLon < -180 || parsedLon > 180) {
+            if (typeof showToast === 'function') showToast('Invalid coordinates.', 'error');
+            return;
+        }
+        close();
+        onSave({
+            name:  nameEl.value,
+            desc:  descEl.value,
+            cmt:   cmtEl.value,
+            sym:   symEl.value.trim(),
+            color: colorEl.value,
+            lat:   parsedLat,
+            lon:   parsedLon,
+        });
+    };
+    // Capture Escape/Enter before other document handlers so it doesn't also
+    // cancel an active tool or submit the wrong form.
+    const keyHandler = (e) => {
+        if (e.key === 'Escape') {
+            e.stopImmediatePropagation();
+            e.preventDefault();
+            close();
+        } else if (e.key === 'Enter' && !e.shiftKey && e.target && e.target.tagName !== 'TEXTAREA') {
+            e.stopImmediatePropagation();
+            e.preventDefault();
+            save();
+        }
+    };
+    document.addEventListener('keydown', keyHandler, true);
+    $('.modal-close').addEventListener('click', close);
+    $('.modal-backdrop').addEventListener('click', close);
+    $('.wpt-btn-cancel').addEventListener('click', close);
+    $('.wpt-btn-save').addEventListener('click', save);
+    $('#wm-preset-btn').addEventListener('click', () => {
+        showColorPresetMenu($('#wm-preset-btn'), hex => { colorEl.value = hex; });
+    });
+    setTimeout(() => nameEl.focus(), 0);
 }
 
 function deleteWaypointEl(wptEl) {
@@ -947,11 +1094,12 @@ map.on('click', (e) => {
         updateDrawPreview();
         updateUndoButton();
     } else if (state.activeTool === 'addwpt') {
-        const name = prompt('Waypoint name:', '');
-        if (name === null) { setActiveTool(null); return; }
-        const desc = prompt('Description (optional):', '');
-        if (desc === null) { setActiveTool(null); return; }
-        addWaypoint(e.latlng.lat, e.latlng.lng, name.trim() || 'Waypoint', desc.trim());
+        const {lat, lng} = e.latlng;
+        showWaypointModal({
+            title: 'Add waypoint',
+            lat, lon: lng,
+            onSave: fields => addWaypoint(fields),
+        });
         setActiveTool(null);
     } else if (state.activeTool === 'split') {
         // Click missed the polyline itself — fall back to nearest candidate.

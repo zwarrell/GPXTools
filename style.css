@@ -575,6 +575,142 @@ body.contents-active #legend { display: none; }
 }
 .wpt-popup-actions button.wpt-del-btn { background: #c00; }
 
+/* Color dot rendered on waypoint rows in the contents panel. */
+.cn-wpt-dot {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 1px solid rgba(0,0,0,0.25);
+    flex-shrink: 0;
+    margin-right: 2px;
+}
+
+/* ---------- Waypoint edit / add modal ---------- */
+.wpt-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 2100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.wpt-modal .modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+}
+.wpt-modal .modal-box {
+    position: relative;
+    background: white;
+    border-radius: 8px;
+    width: 420px;
+    max-width: 92vw;
+    max-height: 92vh;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.35);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.wpt-modal .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid #eee;
+}
+.wpt-modal .modal-header h2 { margin: 0; font-size: 16px; color: #333; }
+.wpt-modal .modal-close {
+    background: transparent;
+    border: none;
+    color: #666;
+    font-size: 22px;
+    line-height: 1;
+    padding: 0 8px;
+    cursor: pointer;
+    border-radius: 3px;
+}
+.wpt-modal .modal-close:hover { color: #333; background: #eee; }
+.wpt-modal .modal-body {
+    padding: 14px 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.wpt-modal .modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 10px 16px;
+    border-top: 1px solid #eee;
+}
+.wpt-modal .modal-footer button {
+    padding: 6px 14px;
+    font-size: 13px;
+    border-radius: 4px;
+    border: 1px solid #ccc;
+    background: #f4f4f4;
+    color: #333;
+    cursor: pointer;
+}
+.wpt-modal .modal-footer button:hover { background: #e8e8e8; }
+.wpt-modal .modal-footer .wpt-btn-save {
+    background: #0066cc;
+    border-color: #0052a3;
+    color: white;
+}
+.wpt-modal .modal-footer .wpt-btn-save:hover { background: #0052a3; }
+
+.wpt-modal .wpt-field { display: flex; flex-direction: column; gap: 4px; }
+.wpt-modal .wpt-field label {
+    font-size: 12px;
+    color: #555;
+    font-weight: 500;
+}
+.wpt-modal .wpt-field input[type="text"],
+.wpt-modal .wpt-field input[type="number"],
+.wpt-modal .wpt-field textarea {
+    padding: 6px 8px;
+    font-size: 13px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-family: inherit;
+    resize: vertical;
+}
+.wpt-modal .wpt-field textarea { min-height: 40px; }
+.wpt-modal .wpt-hint {
+    font-size: 11px;
+    color: #888;
+    margin-top: 2px;
+}
+.wpt-modal .wpt-hint code {
+    background: #f2f2f2;
+    padding: 0 3px;
+    border-radius: 2px;
+    font-family: ui-monospace, "Consolas", monospace;
+    font-size: 10px;
+}
+.wpt-modal .wpt-color-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.wpt-modal .wpt-color-row input[type="color"] {
+    width: 40px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    cursor: pointer;
+    background: none;
+}
+.wpt-modal .wpt-latlon-row {
+    display: flex;
+    gap: 8px;
+}
+.wpt-modal .wpt-latlon-row input { flex: 1; }
+
 /* Draggable point markers used by Draw and Extend tools. */
 .draw-point-marker {
     background: #22c55e;
@@ -836,6 +972,25 @@ body.contents-active #legend { display: none; }
         box-shadow: 0 4px 12px rgba(0,0,0,0.6);
     }
     .color-preset-swatch { border-color: rgba(255,255,255,0.2); }
+    .cn-wpt-dot { border-color: rgba(255,255,255,0.35); }
+    .wpt-modal .modal-box { background: #262626; box-shadow: 0 6px 24px rgba(0,0,0,0.7); }
+    .wpt-modal .modal-header,
+    .wpt-modal .modal-footer { border-color: #444; }
+    .wpt-modal .modal-header h2 { color: #eee; }
+    .wpt-modal .modal-close { color: #ccc; }
+    .wpt-modal .modal-close:hover { background: #333; color: #fff; }
+    .wpt-modal .wpt-field label { color: #ccc; }
+    .wpt-modal .wpt-field input[type="text"],
+    .wpt-modal .wpt-field input[type="number"],
+    .wpt-modal .wpt-field textarea {
+        background: #1e1e1e; color: #eee; border-color: #444;
+    }
+    .wpt-modal .wpt-hint { color: #999; }
+    .wpt-modal .wpt-hint code { background: #333; color: #ddd; }
+    .wpt-modal .modal-footer button { background: #333; color: #eee; border-color: #555; }
+    .wpt-modal .modal-footer button:hover { background: #444; }
+    .wpt-modal .modal-footer .wpt-btn-save { background: #0066cc; border-color: #0052a3; }
+    .wpt-modal .modal-footer .wpt-btn-save:hover { background: #0052a3; }
 }
 
 /* ---------- Mobile / narrow viewports ---------- */

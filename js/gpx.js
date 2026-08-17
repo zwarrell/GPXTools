@@ -126,6 +126,57 @@ function setTrkColor(trkEl, hex) {
     upsertChild(styleLine, GPX_STYLE_NS, 'gpx_style:color', 'color').textContent = hex.slice(1);
 }
 
+// Read a waypoint's color, honoring the two conventions we write:
+//   1. TrailTech                — <TT:Color>#RRGGBB</TT:Color>
+//   2. Garmin GPX Extensions v3 — <gpxx:WaypointExtension><gpxx:DisplayColor>
+function wptColor(wptEl) {
+    if (!wptEl) return null;
+    for (const child of wptEl.children) {
+        if (child.localName !== 'extensions') continue;
+        for (const ext of child.children) {
+            if (ext.localName === 'Color') {
+                const h = normalizeHex(ext.textContent);
+                if (h) return h;
+            }
+            if (ext.localName === 'WaypointExtension') {
+                for (const g of ext.children) {
+                    if (g.localName === 'DisplayColor') {
+                        const h = garminColorToHex(g.textContent);
+                        if (h) return h;
+                    }
+                }
+            }
+        }
+    }
+    return null;
+}
+
+// Write a waypoint color in both TrailTech and Garmin conventions.
+function setWptColor(wptEl, hex) {
+    hex = (hex || '').toUpperCase();
+    if (!/^#[0-9A-F]{6}$/.test(hex)) return;
+    const doc = state.baseXmlDoc;
+
+    ensureNsDeclared('TT', TT_NS);
+    ensureNsDeclared('gpxx', GPXX_NS);
+
+    let ext = [...wptEl.children].find(c => c.localName === 'extensions');
+    if (!ext) {
+        ext = doc.createElementNS(GPX_NS, 'extensions');
+        wptEl.appendChild(ext);
+    }
+    const upsertChild = (parent, ns, qname, localName) => {
+        let el = [...parent.children].find(c => c.localName === localName);
+        if (!el) { el = doc.createElementNS(ns, qname); parent.appendChild(el); }
+        return el;
+    };
+
+    upsertChild(ext, TT_NS, 'TT:Color', 'Color').textContent = hex;
+
+    const wptExt = upsertChild(ext, GPXX_NS, 'gpxx:WaypointExtension', 'WaypointExtension');
+    upsertChild(wptExt, GPXX_NS, 'gpxx:DisplayColor', 'DisplayColor').textContent = hexToGarminColor(hex);
+}
+
 function parseGpx(text) {
     const doc = new DOMParser().parseFromString(text, 'application/xml');
     const err = doc.querySelector('parsererror');

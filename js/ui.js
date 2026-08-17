@@ -101,11 +101,29 @@ function renderContentsPanel() {
         },
     });
 
-    buildRows('wpt', 'wpt', {
-        groupLabel: 'Waypoints',
-        metaText: el => directChildText(el, 'sym') || '',
-        tooltip: (el, name) => directChildText(el, 'desc') || name,
-    });
+    // Waypoints — custom row builder so we can show a color dot alongside the sym.
+    const wpts2 = [...doc.getElementsByTagName('wpt')];
+    if (wpts2.length) {
+        const indexed = wpts2.map((el, i) => ({
+            el, i, name: directChildText(el, 'name') || `(wpt ${i + 1})`
+        }));
+        indexed.sort((a, b) => a.name.localeCompare(b.name, undefined, {sensitivity: 'base'}));
+        html.push(`<div class="contents-group">Waypoints (${indexed.length})</div>`);
+        for (const {el, i, name} of indexed) {
+            const sym = directChildText(el, 'sym');
+            const desc = directChildText(el, 'desc') || name;
+            const color = wptColor(el) || '#0066cc';
+            html.push(
+                `<div class="contents-item" data-kind="wpt" data-idx="${i}">
+                    <span class="cn-wpt-dot" style="background:${color}" title="Color"></span>
+                    <span class="cn-name" title="${escapeHtml(desc)}">${escapeHtml(name)}</span>
+                    <span class="cn-meta">${escapeHtml(sym)}</span>
+                    <button data-rename="wpt:${i}" title="Edit waypoint">✎</button>
+                    <button data-remove="wpt:${i}" title="Delete">×</button>
+                </div>`
+            );
+        }
+    }
 
     if (!html.length) html.push('<div class="hint">Empty base file.</div>');
     el.innerHTML = html.join('');
@@ -257,6 +275,9 @@ function renameFeature(kind, idx) {
     if (!doc) return;
     const el = doc.getElementsByTagName(kind)[idx];
     if (!el) return;
+    // Waypoints get the full edit modal (name + sym + color + coords + desc/cmt)
+    // instead of a name-only prompt, so users can fix everything from one place.
+    if (kind === 'wpt') { editWaypoint(el); return; }
     const current = directChildText(el, 'name');
     const next = prompt(`Rename ${kind}:`, current);
     if (next === null) return;
